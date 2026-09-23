@@ -155,6 +155,10 @@ id_disp:
     or    $t6, $t6, $t4
     lui   $t0, 0x1f80
     sw    $t6, 0x1814($t0)
+    jal   can_blend
+    nop
+    beqz  $v0, idle_out
+    nop
     {LA_T0_COOL}
     lw    $t1, 0($t0)
     nop
@@ -379,8 +383,8 @@ blend_ok:
     jr    $ra
     xori  $v0, $v0, 1
 
-# v0 = 1 when the field callbacks are the active set, no window is open and
-# the map is drawn by the town layer renderer only
+# v0 = 1 when the field callbacks are the active set, no window is open, the
+# map is drawn by the town layer renderer only and no fade/tint is on
 can_blend:
     lui   $t0, 0x800d
     lw    $t0, -0x6f44($t0)
@@ -424,6 +428,22 @@ lay_loop:
     nop
 lay_next:
     bne   $t0, $t3, lay_loop
+    nop
+    # no screen fade or tint (0x8007E6F0: fade length 0x800CCC4C, current
+    # tint 0x800C90D0, neutral 0x80 0x80 0x80): the fade is an overlay the
+    # in-between picture would lack, so it flashed during fades
+    lui   $t0, 0x800d
+    lh    $t1, -0x33b4($t0)
+    lbu   $t2, -0x6f30($t0)
+    lbu   $t3, -0x6f2f($t0)
+    bnez  $t1, cb_no
+    lbu   $t4, -0x6f2e($t0)
+    addiu $t5, $zero, 0x80
+    bne   $t2, $t5, cb_no
+    nop
+    bne   $t3, $t5, cb_no
+    nop
+    bne   $t4, $t5, cb_no
     nop
     jr    $ra
     addiu $v0, $zero, 1
