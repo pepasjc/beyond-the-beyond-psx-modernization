@@ -1,12 +1,13 @@
 """Beyond the Beyond (USA) SCUS_947.02 modernization patch.
 
-    python build_patch.py <reunion.bin> <out.bin> [2x|1.5x]
+    python build_patch.py <in.bin> <out.bin> [--run 2x|1.5x] [--exp N] [--gold N]
 
-Input is a MODE2/2352 .bin of Beyond the Beyond (USA) (CRC32 453917AF)
-with "Beyond the Beyond - Reunion" 1.4 by Skiller and Shadow501 applied
-(https://www.romhacking.net/hacks/9516/).  Reunion's other changes (stat
-tables, dialog, battle graphics) are left untouched.  Changes, all in SCUS_947.02
-except where noted:
+Input is a MODE2/2352 .bin of Beyond the Beyond (USA): either the original
+dump (CRC32 453917AF) or that dump with "Beyond the Beyond - Reunion" 1.4 by
+Skiller and Shadow501 applied (https://www.romhacking.net/hacks/9516/).  On a
+Reunion disc its data changes (stats, dialog, Samson's colours) and its
+curse-flag change are kept; its reward and encounter code is replaced.
+Changes, all in SCUS_947.02 except where noted:
 
 1. Swap X and Triangle.  The game's per-frame input routine (0x80011350)
    stores pad 1 into held/pressed/repeat globals at 0x800C9070..80.  It is
@@ -15,33 +16,28 @@ except where noted:
    holds the follower-check helper used by (2).  The secret-code reader at
    0x8007FE74 calls PadRead() directly and keeps raw buttons.
 
-2. Run with Circle.  The map-object physics loop (0x800894CC, $s3 = object
-   index, obj ptr in $t2) computes accel = obj[0x14]*obj[0x18]>>8 and
-   integrates velocity with linear friction.  Running raises accel and
-   friction together (see RUN_PRESETS) so the character reaches the faster
-   top speed within one update instead of re-accelerating at every tile.
-   It applies to the object whose index equals the player index at
-   0x800CDDB8 and to party followers (objects running script opcode 0x25,
-   "follow obj[0x11]"), only while Circle (0x20) is held.  Circle has no
-   field function in the original game.  Inlining sin/cos (table at
-   0x800CCD50) instead of calling them frees the space.
+2. Run with Circle, smooth followers.  The map-object physics loop
+   (0x800894CC, $s3 = object index, obj ptr in $t2) computes accel =
+   obj[0x14]*obj[0x18]>>8 and integrates velocity with linear friction.
+   Running raises accel and friction together (see RUN_PRESETS) so the
+   player reaches the faster top speed within one update instead of
+   re-accelerating at every tile.  Followers (objects whose last script
+   opcode is 0x25, "follow obj[0x11]") always use that fast-response
+   physics at the leader's speed, so they glide instead of rushing each tile
+   and waiting.  Circle has no field function in the original game.
+   Inlining sin/cos (table at 0x800CCD50) frees the space, and the velocity
+   update floors sub-pixel steps instead of rounding toward zero.
 
 3. Rename VP to HP in menu labels and item/spell names (exe and
    SYSTEM\RESIUS.DAT).  Dialog (.TLK) is compressed and not touched.
 
-4. Rebalance Reunion's rewards: EXP 2.5x (Reunion's code gives 4x),
-   gold stays 4x, and Reunion's gold-lookup slip (a stale monster id in one
-   of the two enemy-defeat paths) is fixed.
+4. Rewards: EXP and gold multipliers (see EXP_PRESETS, GOLD_PRESETS).  On a
+   Reunion disc this also fixes Reunion's gold-lookup slip (a stale monster
+   id in one of the enemy-defeat paths).
 
-5. Random encounters: Reunion forces one battle every 70 steps.  The
-   original per-step roll against the area's rate is back, with a 25-step
-   grace period after each fight.
-
-7. Followers (script opcode 0x25) always use the fast-response physics at
-   the leader's speed (4 px walking, ~8 px running), so they glide behind
-   the leader instead of rushing each tile at their own higher top speed
-   and then waiting.  To make room, the velocity update rounds sub-pixel
-   steps down (floor) instead of toward zero.
+5. Random encounters: the original per-step roll against the area's rate,
+   with a 25-step grace period after each fight (Reunion instead forces one
+   battle every 70 steps).
 
 6. Faster walk-up in battle: the plain melee attack walks to the enemy in
    6 updates instead of 12 (same distance), leaving the swing untouched.
@@ -209,23 +205,23 @@ def vp_to_hp(buf, offsets):
         buf[off] = ord("H")
 
 
-# --- 4. Rebalance: EXP 2.5x, gold 4x, gold-lookup bug fixed ---
-# Enemy-defeat reward code, two copies (0x800423F8, 0x80042490), each ending
-# in "jal FXP_GetMonsterGold".  The earlier patch added "sll $v0,$v0,2"
-# before EXP is added to the battle total (0x80109B08).  2.5x
-# (v*2 + v/2, rounded down) needs two more instructions: one from the
-# load-delay nop after "lh $a0,0x12($t3)", one from the "sll/sra" pair that
-# sign-extended the gold-lookup argument (FXP_GetMonsterGold sign-extends
-# its own argument).  In the first copy the earlier patch also turned that
-# lh into "lh $a1", so the gold lookup got a stale monster id; this restores
-# $a0.  Gold (0x80109B0C) stays 4x.
-REWARD_BLOCKS = [0x800423F8, 0x80042490]
+# --- 4. Rewards: EXP and gold multipliers ---
+# Enemy-defeat reward code, one copy per death animation (0x800423F8,
+# 0x80042490, 0x80042528), each adding the monster's EXP to the battle total
+# (0x800F9B08) and ending in "jal FXP_GetMonsterGold".  The block is
+# rewritten whole, so it works on the original code and on Reunion's.  The
+# multiplier needs up to two instructions: one from the load-delay nop
+# after "lh $a0,0x12($t3)", one from the "sll/sra" pair that sign-extended
+# the gold-lookup argument (FXP_GetMonsterGold sign-extends its own).
+# Rewriting also undoes Reunion's "lh $a1" in the first copy, which handed
+# the gold lookup a stale monster id.
+REWARD_BLOCKS = [0x800423F8, 0x80042490, 0x80042528]
 REWARD = """
     lui   $at, 0x8010
     multu $s5, $s4
     lw    $t1, -0x64f8($at)
-    sll   $t0, $v0, 1
-    srl   $v0, $v0, 1
+    EXP_OP_1
+    EXP_OP_2
     addu  $t9, $t1, $t0
     mflo  $t2
     addu  $t3, $s3, $t2
@@ -237,6 +233,23 @@ REWARD = """
     nop
 """
 
+# EXP gained = v + t0 + v' where t0 and v' come from these two ops.
+EXP_PRESETS = {
+    "1": ("move $t0, $zero", "nop"),
+    "1.5": ("srl $t0, $v0, 1", "nop"),
+    "2": ("move $t0, $v0", "nop"),
+    "2.5": ("sll $t0, $v0, 1", "srl $v0, $v0, 1"),     # 2v + v/2
+    "3": ("sll $t0, $v0, 1", "nop"),
+    "4": ("sll $t0, $v0, 1", "sll $v0, $v0, 1"),
+}
+EXP_MULT = "2.5"
+# Gold: the three words after "jal FXP_GetMonsterGold" load the running
+# total and add the monster's gold.  The original spends two lui's on the
+# same base; one is enough, which leaves a slot for the multiplier.
+GOLD_SITES = [0x80042430, 0x800424C8, 0x80042560]
+GOLD_PRESETS = {"1": "nop", "2": "sll $v0, $v0, 1", "4": "sll $v0, $v0, 2"}
+GOLD_MULT = "2"
+
 # --- 5. Rebalance: random encounters with a grace period ---
 # The earlier patch replaced the per-step roll at 0x8006E040 with "battle
 # once 70 steps have passed" ($s5 = steps since last battle).  Restore the
@@ -247,13 +260,7 @@ ENCOUNTER_AT = 0x8006E040
 NO_BATTLE = 0x8006ED98
 
 
-# --- 7. Followers (script opcode 0x25) always use the fast-response physics at
-   the leader's speed (4 px walking, ~8 px running), so they glide behind
-   the leader instead of rushing each tile at their own higher top speed
-   and then waiting.  To make room, the velocity update rounds sub-pixel
-   steps down (floor) instead of toward zero.
-
-6. Faster walk-up in battle ---
+# --- 6. Faster walk-up in battle ---
 # Battle actors are updated at 30 Hz on a stack copy (0x8001E208 loop); the
 # walk-up is state 0x140.  Its setup (jump table 0x800C51D8, by attack type)
 # sets velocity = distance / N, and the per-type handler (table 0x800C5218)
@@ -344,6 +351,9 @@ def main(src_bin, out_bin):
     exe = bytearray(disc.read_file(EXE_NAME))
     base = struct.unpack_from("<I", exe, 0x18)[0] - 0x800
 
+    reunion = exe[0x80042404 - base:0x80042408 - base] == struct.pack("<I", 0x00021080)
+    print("base:", "Reunion" if reunion else "original")
+
     # Sanity: make sure we are patching the expected build.
     assert exe[0x80089650 - base:0x80089654 - base] == beqz_t6(0x80089650, 0x800896f4)
     assert exe[0x80011350 - base:0x80011354 - base] == struct.pack("<I", (3 << 26) | (0x800C21A8 >> 2 & 0x3FFFFFF))
@@ -370,18 +380,26 @@ def main(src_bin, out_bin):
     exe[off + 4:off + 8] = assemble("move $a1, $zero", 0)
     print(f"branch 0x80089650 -> {hex(fr)}")
 
+    exp_1, exp_2 = EXP_PRESETS[EXP_MULT]
+    reward = REWARD.replace("EXP_OP_1", exp_1).replace("EXP_OP_2", exp_2)
     for blk in REWARD_BLOCKS:
-        # 4th word must be the earlier patch's "sll $v0,$v0,2"
-        assert exe[blk + 12 - base:blk + 16 - base] == struct.pack("<I", 0x00021080), hex(blk)
-        # ...and it must end in "sll $t4,$a0,16 / jal gold / sra $a0,$t4,16"
+        # 4th word: "lui $at" in the original, Reunion's "sll $v0,$v0,2"
+        assert exe[blk + 12 - base:blk + 16 - base] in (
+            assemble("lui $at, 0x8010", 0), struct.pack("<I", 0x00021080)), hex(blk)
+        # ...and the block ends in "sll $t4,$a0,16 / jal gold / sra $a0,$t4,16"
         assert exe[blk + 48 - base:blk + 52 - base] == struct.pack("<I", (3 << 26) | (0x80072670 >> 2 & 0x3FFFFFF)), hex(blk)
-        code = assemble(REWARD, blk)
+        code = assemble(reward, blk)
         assert len(code) == 56
         exe[blk - base:blk - base + 56] = code
-    print("rewards: EXP 2.5x, gold 4x, gold lookup fixed")
+    for site in GOLD_SITES:
+        o = site - base
+        assert exe[o + 12:o + 20] == assemble("addu $t7, $t6, $v0\nsw $t7, -0x64f4($at)", 0), hex(site)
+        exe[o:o + 12] = assemble("lui $at, 0x8010\nlw $t6, -0x64f4($at)\n" + GOLD_PRESETS[GOLD_MULT], site)
+    print(f"rewards: EXP {EXP_MULT}x, gold {GOLD_MULT}x")
 
     e = ENCOUNTER_AT - base
-    assert exe[e:e + 4] == assemble("slti $at, $s5, 0x46", ENCOUNTER_AT)
+    assert exe[e:e + 4] in (assemble("slti $at, $s5, 0x46", ENCOUNTER_AT),   # Reunion
+                            assemble("slt $at, $t6, $s1", ENCOUNTER_AT))     # original
     exe[e:e + 20] = b"".join([
         assemble(f"slti $at, $s5, {GRACE_STEPS}", ENCOUNTER_AT),
         branch(BNE, AT_REG, ENCOUNTER_AT + 4, NO_BATTLE),
@@ -418,7 +436,14 @@ def main(src_bin, out_bin):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 3:
-        RUN_SPEED = sys.argv[3]
+    import argparse
+    ap = argparse.ArgumentParser(description="Build the modernized Beyond the Beyond disc.")
+    ap.add_argument("src", help="MODE2/2352 .bin: original dump or Reunion 1.4")
+    ap.add_argument("out", help="output .bin")
+    ap.add_argument("--run", choices=sorted(RUN_PRESETS), default=RUN_SPEED)
+    ap.add_argument("--exp", choices=sorted(EXP_PRESETS, key=float), default=EXP_MULT)
+    ap.add_argument("--gold", choices=sorted(GOLD_PRESETS, key=float), default=GOLD_MULT)
+    args = ap.parse_args()
+    RUN_SPEED, EXP_MULT, GOLD_MULT = args.run, args.exp, args.gold
     print(f"run speed: {RUN_SPEED}")
-    main(sys.argv[1], sys.argv[2])
+    main(args.src, args.out)

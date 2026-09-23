@@ -1,8 +1,9 @@
 # Beyond the Beyond — PSX Modernization
 
-Quality-of-life patch for **Beyond the Beyond** (PlayStation, USA, SCUS-94702),
-built on top of the fan patch **Beyond the Beyond – Reunion** by Skiller and
-Shadow501.
+Quality-of-life patch for **Beyond the Beyond** (PlayStation, USA, SCUS-94702).
+It applies to the original game, or on top of the fan patch
+**Beyond the Beyond – Reunion** by Skiller and Shadow501 to keep that patch's
+stat rebalance and fixes.
 
 ## Features
 
@@ -20,13 +21,14 @@ Shadow501.
   stopping. This works both walking and running.
 - **HP instead of VP:** menus, status screens and item/spell names ("HP Up",
   "Everyone's HP Heal") say HP.
-- **Rebalanced rewards:** EXP ×2.5, gold ×4.
+- **Reward multipliers:** EXP ×2.5 and gold ×2 by default. Both can be
+  changed at build time (`--exp 1|1.5|2|2.5|3|4`, `--gold 1|2|4`).
 - **Random encounters:** the original per-step roll against each area's rate
   is restored. After every fight there is a 25-step grace period, so there
   are no back-to-back battles. On average there is a fight every ~36–50
   steps instead of Reunion's fixed one every 70.
-- **Bug fix:** in Reunion, one of the two enemy-defeat paths looked up gold
-  with a stale monster id. Every enemy now pays its own gold.
+- **Bug fix (Reunion base):** in Reunion, one of the enemy-defeat paths
+  looked up gold with a stale monster id. Every enemy now pays its own gold.
 
 ## Credits
 
@@ -37,13 +39,11 @@ Shadow501.
     1.3 (character rebalance, Samson no longer affected by the Ramue curse)
     and 1.4 (gold ×3, Samson's armor colours to match the cover art).
 
-  This project applies on top of **Reunion 1.4** (`Beyond the Beyond - Reunion
-  (Ver 1.4).PPF`, 158 records / 237 bytes). All of Reunion's changes are kept:
-  the stat rebalance (`SYSTEM/RESIUS.DAT`), the dialog and battle-graphics
-  edits, and the executable changes. Only its reward multipliers and its
-  encounter rule are adjusted here (see Features). In the executable, Reunion
-  multiplies both EXP and gold by 4 (`sll $v0,$v0,2`) and replaces the
-  random encounter roll with one battle every 70 steps.
+  Reunion 1.4 is optional. On a Reunion disc (`Beyond the Beyond - Reunion
+  (Ver 1.4).PPF`, 158 records / 237 bytes) its data changes are kept: the
+  stat rebalance (`SYSTEM/RESIUS.DAT`), the dialog and battle-graphics edits,
+  and its curse-flag change at `0x80073B80`. Its reward multipliers and
+  encounter rule are replaced by this patch's code.
 - **Beyond the Beyond** © 1995/1996 Sony Computer Entertainment, developed by
   Camelot Software Planning. This repository contains no game data.
 - **Emulator test harness:** built on `emurun.py` from the Snatcher translation
@@ -57,15 +57,15 @@ Shadow501.
 You need:
 
 - A dump of Beyond the Beyond (USA) as a single-track `MODE2/2352` `.bin`,
-  CRC32 `453917AF`, with the Reunion 1.4 PPF applied (e.g. with PPF-O-Matic
-  or ppfdev).
+  CRC32 `453917AF`. Optionally apply the Reunion 1.4 PPF to it first (e.g.
+  with PPF-O-Matic or ppfdev); the build detects which one it got.
 - Python 3.10+ with `pip install keystone-engine capstone`.
 - `chdman` (MAME tools) to convert CHD ↔ BIN/CUE.
 
 ```sh
-chdman extractcd -i "Beyond the Beyond (USA).chd" -o reunion.cue -ob reunion.bin
-python build_patch.py reunion.bin modern.bin          # run speed 2x (default)
-python build_patch.py reunion.bin modern.bin 1.5x     # gentler run
+chdman extractcd -i "Beyond the Beyond (USA).chd" -o base.cue -ob base.bin
+python build_patch.py base.bin modern.bin                          # defaults
+python build_patch.py base.bin modern.bin --run 1.5x --exp 2 --gold 1
 # write a cue for modern.bin, then:
 chdman createcd -i modern.cue -o "Beyond the Beyond (USA).chd"
 ```
@@ -92,7 +92,7 @@ docstring at the top of `build_patch.py` for each change.
 | Field object physics loop | `0x800894CC` |
 | Object script opcode table (`0x25` = follow) | `0x800CE050` |
 | Random encounter check | `0x8006DCA0` (roll at `0x8006E040`) |
-| Enemy-defeat rewards | `0x800423F8`, `0x80042490` |
+| Enemy-defeat rewards (one per death animation) | `0x800423F8`, `0x80042490`, `0x80042528` |
 | Battle EXP / gold totals | `0x800F9B08` / `0x800F9B0C` |
 | Battle actors (`0x48` bytes each: x/y/z, velocity at `+8`, state `+0x14`, counter `+0x16`) | `0x800F9B20` |
 | Battle actor update loop (works on a stack copy at `sp+0xC0`) | `0x8001E208` |
@@ -123,6 +123,7 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 |---|---|
 | `test_build.py` | Builds `work/test.bin`, where every step starts a battle (fixed encounter area, set with `AREA`), even in towns |
 | `nav.py` | Restores a Beetle savestate, plays a list of moves, saves a state and a screenshot |
+| `battle_rewards.py` | Fights a few rounds on the test disc and prints the EXP and gold totals (set `EXP`/`GOLD` for `test_build.py`) |
 | `battle_attack.py` | Starts a battle, attacks with everyone, logs Finn's walk and records an MP4 |
 | `battle_walk_watch.lua` | PCSX-Redux script: write breakpoints on the party's battle position/velocity, logs every writer PC |
 | `play_redux.bat` | Opens PCSX-Redux with the test disc and that script, for someone to play while it records |
@@ -132,6 +133,8 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 - NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.
-- Reunion redirects a flag write at `0x80073B80` (byte `0x44` bit 1 of a
-  monster/party table entry → byte `7`). This is probably its "Samson is no
-  longer affected by the Ramue curse" change. It is left as is.
+- On a Reunion disc, Reunion's change at `0x80073B80` stays: the setter for
+  status bit 1 of a character record (byte `0x44`) writes to byte `7`
+  instead, so the flag is never set for anyone. Byte 7 is the last byte of
+  the character's 8-byte name, so the status bits land there. This is
+  probably Reunion's "Samson is no longer affected by the Ramue curse" fix.

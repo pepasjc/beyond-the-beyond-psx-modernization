@@ -1,6 +1,6 @@
 """Test-only disc: every step starts a battle, using a fixed encounter area.
 
-    AREA=<n> python work/test_build.py
+    AREA=<n> BASE=<in.bin> python debug/test_build.py
 """
 import os
 import struct
@@ -11,7 +11,9 @@ import build_patch as bp  # noqa: E402
 from disc import Disc  # noqa: E402
 
 bp.GRACE_STEPS = 0
-bp.main("patched.bin", "work/test.bin")
+bp.EXP_MULT = os.environ.get("EXP", bp.EXP_MULT)
+bp.GOLD_MULT = os.environ.get("GOLD", bp.GOLD_MULT)
+bp.main(os.environ.get("BASE", "patched.bin"), "work/test.bin")
 d = Disc("work/test.bin")
 exe = bytearray(d.read_file(bp.EXE_NAME))
 base = struct.unpack_from("<I", exe, 0x18)[0] - 0x800
