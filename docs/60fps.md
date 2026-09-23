@@ -190,6 +190,34 @@ every DMA 2 completion interrupt for one of its own queue entries.
 - Code no longer fits one cave: blend_draw and save_prev live in a second
   dead function, `0x800B4954` (251 words).
 
+### World map (after the second MiSTer test)
+
+The second build corrupted the screen on the world map. Found by
+reproducing it in Beetle (file 2 of the user's card, Border Church, walk
+south):
+
+- The world map uses the same field callbacks, but its map layer uses
+  renderer type 2 (layer byte +0x49; towns use type 1 on every layer).
+  Renderer 2 calls libgte routines and keeps state between frames. Drawing
+  it at an in-between camera wedged the GPU, and `DrawSync` timed out.
+  `can_blend` now requires every enabled layer (+0x4A) to be type 1.
+  Everywhere else runs exactly as vanilla. In Beetle the world map never
+  even reaches an idle vblank: its handler takes more than a frame, so
+  every call lands on a tick.
+- Masking DMA 2's DICR enable does not hide a transfer from libgpu.
+  libetc's DMA dispatcher (`0x800C2BE4`) acknowledges *every* flagged
+  channel and calls its callback. The in-between picture now goes through
+  libgpu itself (`PutDrawEnv` + `DrawOTag` from the idle vblank). That
+  works fine; the "libgpu deadlocks from the idle vblank" of the first
+  prototype was really the load-delay bug.
+- libgpu's queue only advances when someone pumps it (`_exeque`,
+  `0x800AE928`). DrawSync does, and so does `settle` now; without it the
+  world map filled the queue (63 entries) while we waited.
+- Better slow-machine test than `late=`: Beetle's
+  `beetle_psx_cpu_freq_scale` through a RetroArch `.opt` file
+  (`RETRO_OPTIONS=work/slow70.opt`). At 70 % CPU the vanilla game drops
+  62 vblanks per 4000 frames and this build 58.
+
 ### Bugs found on the way (worth remembering)
 
 - **Load delay slot.** `lw $ra, 16($sp)` directly followed by `jr $ra`

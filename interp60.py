@@ -37,6 +37,7 @@ import struct
 DB0, DB1 = 0x800DB890, 0x800EA90C          # double-buffer structs
 DRAWSYNC, PUTDISP, PUTDRAW, DRAWOTAG = 0x800ACAFC, 0x800AD130, 0x800AD040, 0x800ACFD8
 CLEAROT = 0x800ACE58                        # ClearOTag(ot, n)
+EXEQUE = 0x800AE928                         # libgpu: start the next queued transfer if DMA 2 is free
 DISPATCH = 0x80010B54                       # 30 Hz callback dispatcher
 LAYER_DRAW, MAP_FINISH, SPRITES = 0x80084534, 0x80084600, 0x80088D7C
 FIELD_CBS = (0x80085EFC, 0x80086550, 0x80047684)
@@ -68,9 +69,8 @@ SHOWN = CAVE + 4 * (CAVE_WORDS - 2)         # half on screen (0 top, 1 bottom)
 NEXT = CAVE + 4 * (CAVE_WORDS - 3)          # half with the newest finished picture
 MID = CAVE + 4 * (CAVE_WORDS - 4)           # in-between picture in flight: half + 1
 COOL = CAVE + 4 * (CAVE_WORDS - 5)          # ticks left without in-between pictures
-DSAVE = CAVE + 4 * (CAVE_WORDS - 6)         # DICR's DMA 2 interrupt enable before ours
-FAILS = CAVE + 4 * (CAVE_WORDS - 7)         # misses on this map (cooldown doubles each)
-DATA_WORDS = 7
+FAILS = CAVE + 4 * (CAVE_WORDS - 6)         # misses on this map (cooldown doubles each)
+DATA_WORDS = 6
 WAIT_LIMIT = 8        # lines into the tick frame an in-between picture may still finish
 SUBMIT_LIMIT = 200    # no in-between picture submitted this late in the idle frame
 IDLE_LATE = 240       # the idle vblank's work ending this late counts as a miss
@@ -174,65 +174,34 @@ have_other:
     jal   blend_draw
     nop
 show:
-    # Submit without libgpu (its queue is not built for pictures fed from
-    # the idle vblank).  Let the queue drain (the sprite setup queues a CLUT
-    # upload); give up if the frame is too far gone for the GPU to finish.
-    jal   {DRAWSYNC}
-    move  $a0, $zero
+    # Submit through libgpu like the tick picture (PutDrawEnv + DrawOTag),
+    # queued behind the CLUT upload the sprite setup queued.  libgpu must
+    # see every DMA 2 transfer: libetc hands each DMA 2 completion to it.
+    # Too late in the frame for the GPU to finish: submit nothing.
     lui   $t0, 0x1f80
     lw    $t1, 0x1110($t0)
     nop
     andi  $t1, $t1, 0xffff
     slti  $t1, $t1, {SUBMIT_LIMIT}
     beqz  $t1, idle_out
-    lui   $t2, 0x0400
-gpu_wait:
-    lw    $t1, 0x1814($t0)
     nop
-    and   $t1, $t1, $t2
-    beqz  $t1, gpu_wait
-    nop
-    # draw half m = 1 - SHOWN with DB(m)'s prebuilt DR_ENV packet (draw
-    # area, offset, clear) put in front of the ordering table
+    # draw half m = 1 - SHOWN with DB(m)'s DRAWENV
     {LA_T7_SHOWN}
     lw    $t7, 0($t7)
-    {LA_T3_DRENV1}
-    beqz  $t7, have_drenv
+    {LA_A0_DB1}
+    beqz  $t7, have_denv
+    xori  $s1, $t7, 1
+    {LA_A0_DB0}
+have_denv:
+    jal   {PUTDRAW}
     nop
-    {LA_T3_DRENV0}
-have_drenv:
-    lw    $t4, 0($t3)
-    lui   $t5, 0xff00
-    and   $t4, $t4, $t5
-    addiu $t5, $s0, 0x70
-    sll   $t5, $t5, 8
-    srl   $t5, $t5, 8
-    or    $t4, $t4, $t5
-    sw    $t4, 0($t3)
-    lui   $t1, 0x0400
-    ori   $t1, $t1, 2
-    sw    $t1, 0x1814($t0)
-    sll   $t3, $t3, 8
-    srl   $t3, $t3, 8
-    sw    $t3, 0x10a0($t0)
-    sw    $zero, 0x10a4($t0)
-    lw    $t4, 0x10f4($t0)
-    lui   $t5, 0x00fb
-    ori   $t5, $t5, 0xffff
-    and   $t5, $t4, $t5
-    sw    $t5, 0x10f4($t0)
-    lui   $t5, 0x0004
-    and   $t4, $t4, $t5
-    {LA_T5_DSAVE}
-    sw    $t4, 0($t5)
-    lui   $t1, 0x0100
-    ori   $t1, $t1, 0x0401
-    sw    $t1, 0x10a8($t0)
-    xori  $t7, $t7, 1
-    addiu $t7, $t7, 1
+    jal   {DRAWOTAG}
+    addiu $a0, $s0, 0x70
+    addiu $s1, $s1, 1
     {LA_T1_MID}
-    sw    $t7, 0($t1)
+    sw    $s1, 0($t1)
     # the idle vblank's own work ran close to the next vblank: a miss
+    lui   $t0, 0x1f80
     lw    $t1, 0x1110($t0)
     nop
     andi  $t1, $t1, 0xffff
@@ -253,7 +222,7 @@ idle_out:
 # ------------------------------------------- tick vblank, instead of DrawSync(0)
 # An in-between picture still drawing at line WAIT_LIMIT of the tick frame
 # is a miss: the tick waits for it (stopping DMA 2 half way through a list
-# confuses libgpu) and the in-between pictures pause (blend_fail).
+# wedged libgpu's queue) and the in-between pictures pause (blend_fail).
 tick_pre:
     addiu $sp, $sp, -24
     sw    $ra, 16($sp)
@@ -274,52 +243,64 @@ tp_sync:
 
 # Settle the in-between picture in flight (MID = half + 1), if any: wait
 # while it draws until line a0 of the frame (hblanks since the handler
-# started).  Finished: its half is the newest picture, and DMA 2's interrupt
-# goes back to libgpu (masked while ours ran: libgpu takes every DMA 2
-# completion for one of its own queue entries).
-# v0 = 1 when nothing is in flight any more, 0 when it is still drawing.
+# started), pumping libgpu's queue the way DrawSync does (the queue does not
+# advance on interrupts alone; the world map queues far more than a town).
+# Finished (queue empty, DMA 2 idle, GPU ready): its half is the newest
+# picture.  v0 = 1 when nothing is in flight any more, 0 when still drawing.
 settle:
-    {LA_T0_MID}
-    lw    $t1, 0($t0)
-    lui   $t2, 0x1f80
-    beqz  $t1, st_yes
-    lui   $t3, 0x0100
+    addiu $sp, $sp, -32
+    sw    $ra, 16($sp)
+    sw    $s0, 20($sp)
+    sw    $s1, 24($sp)
+    sw    $s2, 28($sp)
+    move  $s0, $a0
+    {LA_S1_MID}
+    lw    $s2, 0($s1)
+    nop
+    beqz  $s2, st_yes
+    nop
 st_wait:
-    lw    $t4, 0x10a8($t2)
-    lw    $t5, 0x1814($t2)
-    and   $t4, $t4, $t3
-    bnez  $t4, st_busy
+    jal   {EXEQUE}
+    nop
+    lui   $t7, 0x800d
+    lw    $t4, -0xdc0($t7)
+    lw    $t5, -0xdbc($t7)
+    lui   $t2, 0x1f80
+    lw    $t6, 0x10a8($t2)
+    bne   $t4, $t5, st_busy
+    lui   $t3, 0x0100
+    and   $t6, $t6, $t3
+    bnez  $t6, st_busy
     lui   $t6, 0x0400
+    lw    $t5, 0x1814($t2)
+    nop
     and   $t5, $t5, $t6
     bnez  $t5, st_done
     nop
 st_busy:
+    lui   $t2, 0x1f80
     lw    $t4, 0x1110($t2)
     nop
     andi  $t4, $t4, 0xffff
-    slt   $t4, $t4, $a0
+    slt   $t4, $t4, $s0
     bnez  $t4, st_wait
     nop
-    jr    $ra
+    b     st_out
     move  $v0, $zero
 st_done:
-    addiu $t1, $t1, -1
+    addiu $s2, $s2, -1
     {LA_T4_NEXT}
-    sw    $t1, 0($t4)
-    sw    $zero, 0($t0)
-    lw    $t4, 0x10f4($t2)
-    {LA_T6_DSAVE}
-    lw    $t6, 0($t6)
-    lui   $t5, 0x00ff
-    ori   $t5, $t5, 0xffff
-    and   $t4, $t4, $t5
-    or    $t4, $t4, $t6
-    lui   $t5, 0x0400
-    or    $t4, $t4, $t5
-    sw    $t4, 0x10f4($t2)
+    sw    $s2, 0($t4)
+    sw    $zero, 0($s1)
 st_yes:
-    jr    $ra
     addiu $v0, $zero, 1
+st_out:
+    lw    $ra, 16($sp)
+    lw    $s0, 20($sp)
+    lw    $s1, 24($sp)
+    lw    $s2, 28($sp)
+    jr    $ra
+    addiu $sp, $sp, 32
 
 # A miss (an in-between picture late for the tick, or an idle vblank whose
 # work ran close to the next vblank): no in-between pictures
@@ -398,7 +379,8 @@ blend_ok:
     jr    $ra
     xori  $v0, $v0, 1
 
-# v0 = 1 when the field callbacks are the active set and no window is open
+# v0 = 1 when the field callbacks are the active set, no window is open and
+# the map is drawn by the town layer renderer only
 can_blend:
     lui   $t0, 0x800d
     lw    $t0, -0x6f44($t0)
@@ -426,6 +408,22 @@ win_loop:
     bnez  $t1, cb_no
     nop
     bne   $t0, $t3, win_loop
+    nop
+    # every enabled map layer must use renderer 1 (towns, 0x80083C94): the
+    # world map's renderer 2 keeps state between frames, and drawing it at
+    # an in-between camera corrupted the screen on the MiSTer
+    {LA_T0_LAYERS}
+    addiu $t3, $t0, 0xf0
+lay_loop:
+    lbu   $t1, 0x4a($t0)
+    lbu   $t2, 0x49($t0)
+    addiu $t0, $t0, 0x50
+    beqz  $t1, lay_next
+    addiu $t2, $t2, -1
+    bnez  $t2, cb_no
+    nop
+lay_next:
+    bne   $t0, $t3, lay_loop
     nop
     jr    $ra
     addiu $v0, $zero, 1
@@ -661,9 +659,8 @@ TRACE_COUNT = NL.join(["    lui   $at, 0x801e", "    lw    $v1, {off}($at)", "  
 TRACE_MARK = NL.join(["    lui   $at, 0x801e", "    addiu $v1, $zero, {n}",
                       "    sw    $v1, 0x6760($at)"]) + NL
 TRACE_COUNTERS = (("idle:", 0x6770), ("tick_env:", 0x6774), ("save_prev:", 0x6778), ("blend_draw:", 0x677C))
-TRACE_MARKS_SHOW = (("gpu_wait:", 21), ("have_drenv:", 22),
-                    ("    lui   $t1, 0x0400" + NL + "    ori   $t1, $t1, 2", 23))
-TRACE_MARKS = (("    jal   {DRAWSYNC}", 1), ("    jal   blend_draw", 2), ("    # redirect the drawing to buffer s0", 3),
+TRACE_MARKS_SHOW = (("have_denv:", 21),)
+TRACE_MARKS = (("    jal   {DRAWOTAG}", 1), ("    jal   blend_draw", 2), ("    # redirect the drawing to buffer s0", 3),
                ("    jal   {CLEAROT}", 4), ("    # objects: +0x1c / +0x20", 5), ("    jal   {MAP_FINISH}", 6),
                ("    jal   {SPRITES}", 7), ("    # put everything back", 8), ("show:", 9), ("idle_out:", 10))
 
@@ -726,7 +723,7 @@ def source():
         "LA_T1_DB0": la("$t1", DB0), "LA_T3_DB0": la("$t3", DB0), "LA_T3_DB1": la("$t3", DB1),
         "LA_T3_DRENV0": la("$t3", DB0 + 0x1C), "LA_T3_DRENV1": la("$t3", DB1 + 0x1C),
         "WAIT_LIMIT": str(WAIT_LIMIT), "SUBMIT_LIMIT": str(SUBMIT_LIMIT), "IDLE_LATE": str(IDLE_LATE), "COOLDOWN": str(COOLDOWN), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
-        "LA_A0_DB1D": la("$a0", DB1 + 0x5C), "LA_A0_DB1": la("$a0", DB1),
+        "LA_A0_DB1D": la("$a0", DB1 + 0x5C), "LA_A0_DB1": la("$a0", DB1), "LA_A0_DB0": la("$a0", DB0),
         "LA_T0_CBS": la("$t0", CBS), "LA_T0_WIN": la("$t0", WINDOWS),
         "LA_T2_CB0": la("$t2", FIELD_CBS[0]), "LA_T2_CB1": la("$t2", FIELD_CBS[1]),
         "LA_T2_CB2": la("$t2", FIELD_CBS[2]),
@@ -744,13 +741,14 @@ def source():
         "LA_T9_PREVL": la("$t9", PREV_LAYERS), "LA_T1_PREVL": la("$t1", PREV_LAYERS),
         "LA_T9_PREVO": la("$t9", PREV_OBJS), "LA_T1_PREVO": la("$t1", PREV_OBJS),
         "DRAWSYNC": hex(DRAWSYNC), "PUTDISP": hex(PUTDISP), "PUTDRAW": hex(PUTDRAW),
-        "DRAWOTAG": hex(DRAWOTAG), "CLEAROT": hex(CLEAROT), "DISPATCH": hex(DISPATCH),
+        "DRAWOTAG": hex(DRAWOTAG), "EXEQUE": hex(EXEQUE), "CLEAROT": hex(CLEAROT), "DISPATCH": hex(DISPATCH),
         "LAYER_DRAW": hex(LAYER_DRAW), "MAP_FINISH": hex(MAP_FINISH),
         "SPRITES": hex(SPRITES), "JUMP": hex(JUMP),
     }
-    for var, addr in (("NEXT", NEXT), ("SHOWN", SHOWN), ("MID", MID), ("COOL", COOL), ("DSAVE", DSAVE), ("FAILS", FAILS)):
+    for var, addr in (("NEXT", NEXT), ("SHOWN", SHOWN), ("MID", MID), ("COOL", COOL), ("FAILS", FAILS)):
         for r in range(10):
             subs[f"LA_T{r}_{var}"] = la(f"$t{r}", addr)
+        subs[f"LA_S1_{var}"] = la("$s1", addr)
     for k, v in subs.items():
         s = s.replace("{" + k + "}", v)
     assert "{" not in s, s[s.index("{"):s.index("{") + 30]
@@ -837,7 +835,7 @@ def apply(exe, base, assemble, branch, BEQ):
             code += assemble("nop", 0) * (PAD_TO - len(code) // 4)
         assert len(code) <= limit * 4, (hex(org), len(code) // 4, limit)
         put(org, code)
-    for a in (STREAK, SHOWN, NEXT, MID, COOL, DSAVE, FAILS):
+    for a in (STREAK, SHOWN, NEXT, MID, COOL, FAILS):
         put(a, struct.pack("<I", 0))
     idle_entry, tick_env, save_prev, tick_pre = CAVE, CAVE + 8, CAVE + 16, CAVE + 24
 
