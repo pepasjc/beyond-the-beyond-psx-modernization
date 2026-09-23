@@ -15,6 +15,9 @@ Shadow501.
 - **Faster battle walk-up:** the plain melee attack reaches the enemy in half
   the time (6 updates instead of 12, same distance). The swing, hit and
   damage timing after the walk are unchanged.
+- **Smooth followers:** party followers such as the dragon move at the
+  leader's speed and keep a steady distance, instead of rushing a tile and
+  stopping. This works both walking and running.
 - **HP instead of VP:** menus, status screens and item/spell names ("HP Up",
   "Everyone's HP Heal") say HP.
 - **Rebalanced rewards:** EXP ×2.5, gold ×4.

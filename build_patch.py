@@ -37,6 +37,12 @@ except where noted:
    original per-step roll against the area's rate is back, with a 25-step
    grace period after each fight.
 
+7. Followers (script opcode 0x25) always use the fast-response physics at
+   the leader's speed (4 px walking, ~8 px running), so they glide behind
+   the leader instead of rushing each tile at their own higher top speed
+   and then waiting.  To make room, the velocity update rounds sub-pixel
+   steps down (floor) instead of toward zero.
+
 6. Faster walk-up in battle: the plain melee attack walks to the enemy in
    6 updates instead of 12 (same distance), leaving the swing untouched.
 """
@@ -120,16 +126,24 @@ PHYS = """
     lhu   $t6, -0x6f90($at)
     lh    $t9, -0x2248($at)
     andi  $t6, $t6, 0x20
-    beq   $t9, $s3, party
-    srl   $a1, $t6, 5
-    xori  $t7, $t7, 0x25
-    sltiu $t7, $t7, 1
-    and   $a1, $a1, $t7
-party:
+    srl   $t6, $t6, 5
     mflo  $s0
     srl   $s0, $s0, 8
+    bne   $t9, $s3, npc
+    move  $a1, $t6
     beqz  $a1, walk
-    RUN_ACCEL
+    RUN_ACCEL_1
+    RUN_ACCEL_2
+    b     walk
+    RUN_ACCEL_3
+npc:
+    xori  $t7, $t7, 0x25
+    bnez  $t7, walk
+    move  $a1, $zero
+    addiu $a1, $zero, 1
+    beqz  $t6, walk
+    addiu $s0, $zero, FOLLOW_WALK
+    addiu $s0, $s0, FOLLOW_RUN_ADD
 walk:
     sll   $t8, $a0, 1
     addu  $t8, $t8, $at
@@ -142,22 +156,14 @@ walk:
     lh    $v1, -0x32b0($t9)
     lh    $t3, 0x48($t2)
     mflo  $t5
-    bgez  $t5, r1
     sra   $t6, $t5, 8
-    addiu $t5, $t5, 0xff
-    sra   $t6, $t5, 8
-r1:
     addu  $t3, $t3, $t6
     sh    $t3, 0x48($t2)
     multu $v1, $s0
     lh    $t7, 0x4a($t2)
     mflo  $t9
     negu  $t9, $t9
-    bgez  $t9, r2
     sra   $t5, $t9, 8
-    addiu $t9, $t9, 0xff
-    sra   $t5, $t9, 8
-r2:
     addu  $t7, $t7, $t5
     sh    $t7, 0x4a($t2)
 friction:
@@ -241,7 +247,13 @@ ENCOUNTER_AT = 0x8006E040
 NO_BATTLE = 0x8006ED98
 
 
-# --- 6. Faster walk-up in battle ---
+# --- 7. Followers (script opcode 0x25) always use the fast-response physics at
+   the leader's speed (4 px walking, ~8 px running), so they glide behind
+   the leader instead of rushing each tile at their own higher top speed
+   and then waiting.  To make room, the velocity update rounds sub-pixel
+   steps down (floor) instead of toward zero.
+
+6. Faster walk-up in battle ---
 # Battle actors are updated at 30 Hz on a stack copy (0x8001E208 loop); the
 # walk-up is state 0x140.  Its setup (jump table 0x800C51D8, by attack type)
 # sets velocity = distance / N, and the per-type handler (table 0x800C5218)
@@ -263,10 +275,18 @@ MELEE_TIMING = (0x80022C98, 0x80022CA4)   # addiu $s5,12 / b / addiu $s1,17
 # the higher f the quicker it gets there.  Field logic runs at 30 Hz, so the
 # screen scrolls in steps of 4 px walking; 8 px steps (2x) judder visibly.
 RUN_PRESETS = {
-    # 2x: M = 14 (16s - 2s), f = 7/8 -> 8 px per update
-    "2x": ("sll $t5, $s0, 4; sll $t6, $s0, 1; subu $s0, $t5, $t6", 0xE0),
-    # 1.5x: M = 4.5 (4s + s/2), f = 3/4 -> 6 px per update
-    "1.5x": ("sll $t5, $s0, 2; srl $t6, $s0, 1; addu $s0, $t5, $t6", 0xC0),
+    # (player run accel from $s0, run friction, follower walk accel,
+    #  follower run accel).  Steady speed with friction f is accel*(1-f)/f:
+    # f = 7/8 -> accel/7, f = 3/4 -> accel/3.  Walking is 0x400 (4 px).
+    # Followers move tile by tile and restart from rest at each tile, so the
+    # first update is only (1-f) of top speed.  At a run they are given a
+    # little extra top speed, so three updates pass the 24 px tile and the
+    # game's "passed the target" snap ends it, instead of a 1 px fourth
+    # update that showed as a hitch every tile.
+    # 2x: M = 14 (16s - 2s) -> 8 px; followers 0x1C00/7 = 4 px, 0x3B80/7 = 8.5 px
+    "2x": ("sll $t5, $s0, 4; sll $t4, $s0, 1; subu $s0, $t5, $t4", 0xE0, 0x1C00, 0x3B80),
+    # 1.5x: M = 4.5 (4s + s/2) -> 6 px; followers 0xC00/3 = 4 px, 0x1380/3 = 6.5 px
+    "1.5x": ("sll $t5, $s0, 2; srl $t4, $s0, 1; addu $s0, $t5, $t4", 0xC0, 0x0C00, 0x1380),
 }
 RUN_SPEED = "2x"
 
@@ -309,10 +329,14 @@ def patch_region(exe, base, start, end, code):
 
 
 def phys_source(helper):
-    accel, fric = RUN_PRESETS[RUN_SPEED]
+    accel, fric, fwalk, frun = RUN_PRESETS[RUN_SPEED]
+    a1, a2, a3 = accel.split("; ")
     return (PHYS.replace("HELPER", hex(helper))
-                .replace("RUN_ACCEL", accel.replace("; ", "\n    "))
-                .replace("RUN_FRICTION", hex(fric)))
+                .replace("RUN_ACCEL_1", a1).replace("RUN_ACCEL_2", a2)
+                .replace("RUN_ACCEL_3", a3)
+                .replace("RUN_FRICTION", hex(fric))
+                .replace("FOLLOW_WALK", hex(fwalk))
+                .replace("FOLLOW_RUN_ADD", hex(frun - fwalk)))
 
 
 def main(src_bin, out_bin):
