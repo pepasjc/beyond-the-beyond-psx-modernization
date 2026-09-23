@@ -252,6 +252,7 @@ EXP_MULT = "2.5"
 GOLD_SITES = [0x80042430, 0x800424C8, 0x80042560]
 GOLD_PRESETS = {"1": "nop", "2": "sll $v0, $v0, 1", "4": "sll $v0, $v0, 2"}
 GOLD_MULT = "2"
+SMOOTH = False
 
 # --- 5. Rebalance: random encounters with a grace period ---
 # The earlier patch replaced the per-step roll at 0x8006E040 with "battle
@@ -442,6 +443,11 @@ def main(src_bin, out_bin):
         print("curse flag: Reunion's change reverted")
     assert exe[o:o + 4] == vanilla_store
 
+    if SMOOTH:
+        import interp60
+        words = interp60.apply(exe, base, assemble, branch, BEQ)
+        print(f"60 Hz presentation: {words} words at {hex(interp60.CAVE)}")
+
     vp_to_hp(exe, [a - base for a in VP_EXE])
     resius = bytearray(disc.read_file(r"SYSTEM\RESIUS.DAT"))
     vp_to_hp(resius, VP_RESIUS)
@@ -461,7 +467,8 @@ if __name__ == "__main__":
     ap.add_argument("--run", choices=sorted(RUN_PRESETS), default=RUN_SPEED)
     ap.add_argument("--exp", choices=sorted(EXP_PRESETS, key=float), default=EXP_MULT)
     ap.add_argument("--gold", choices=sorted(GOLD_PRESETS, key=float), default=GOLD_MULT)
+    ap.add_argument("--smooth", action="store_true", help="60 Hz presentation (experimental)")
     args = ap.parse_args()
-    RUN_SPEED, EXP_MULT, GOLD_MULT = args.run, args.exp, args.gold
+    RUN_SPEED, EXP_MULT, GOLD_MULT, SMOOTH = args.run, args.exp, args.gold, args.smooth
     print(f"run speed: {RUN_SPEED}")
     main(args.src, args.out)

@@ -120,3 +120,43 @@ layer renderers and `0x80088D7C`; find room for the in-between-frame code
 `0x801E4800`-`0x801E9800`, `0x801F7800`-`0x801FC000` — to be checked in
 battles and menus); prototype with the camera only (map layers at the
 interpolated camera, sprites unchanged).
+
+## Prototype status (interp60.py, `build_patch.py --smooth`)
+
+Built so far:
+
+- Code cave: `0x8009A670` (476 words), a function nothing on the disc calls,
+  jumps into or points to (`work/deadcode.py` found 94 such functions, 26 KB).
+- Hooks: idle vblank → `idle` (via a trampoline in the dropped debug
+  load-meter block); tick vblank environments → `tick_env`; before the tick
+  callbacks → `save_prev`.
+- Only active in plain field play (field callback set, no window, double
+  buffering) after a 45-tick warm-up; everywhere else the game runs exactly
+  as shipped. Drawing on the idle vblank outside the field hangs loaders.
+- Stage A (idle vblank re-draws the tick picture, fixed top/bottom buffers)
+  runs 1500+ frames in Beetle without trouble.
+
+Open problem: with the in-between picture enabled, the game freezes inside
+the idle-vblank `DrawOTag` — in libgpu's 64-entry command queue
+(`0x800AE8B0`..`0x800AE8D8`, advanced by interrupt callbacks). Whether it
+happens depends on exact timing (one extra instruction anywhere in the
+routine flips it), so it is a race between the idle-vblank submission and
+libgpu's queue/interrupt handling, not a bug in the drawing itself.
+
+Ideas for the next session:
+
+1. Read libgpu's queue code (`0x800AE850`..`0x800AE930`, `0x800AEBFC`,
+   `0x800C2318`) to see what the enqueue waits on, and submit the idle
+   picture the way the game's own tick path does (or from the same point
+   in the handler).
+2. Submit the in-between picture from the tick vblank instead (after the
+   callbacks), queued behind the tick picture, with triple buffering so
+   nothing draws into the buffer on screen.
+3. Program the GPU directly for the idle picture (GP1 display area, GP0
+   draw area/offset, DMA2 linked list) with DMA2 interrupts masked, so
+   libgpu's queue never sees it.
+
+Debug tools: `debug/smooth_build.py` (options `noblend`, `trace`,
+`skip=<piece>`, `pad=<words>`), `debug/stability.py` (boot, walk, report a
+freeze), `debug/hang_probe.lua`/`.bat` (PCSX-Redux PC logger; boot timing
+there is not deterministic), `debug/gpu_time_*.py`.
