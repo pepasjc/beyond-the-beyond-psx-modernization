@@ -218,6 +218,22 @@ south):
   (`RETRO_OPTIONS=work/slow70.opt`). At 70 % CPU the vanilla game drops
   62 vblanks per 4000 frames and this build 58.
 
+### Fades (after the third MiSTer test)
+
+Leaving a map, the screen blinked: the fade is an overlay primitive drawn
+into the tick picture, and the in-between picture didn't have it, so
+every other frame showed the unfaded scene.
+- The screen tint/fade manager is `0x8007E6F0`, run on every tick before
+  the callbacks. Its state:
+  - fade length `0x800CCC4C` (non-zero while fading);
+  - step counter `0x800CCC48`;
+  - from/to colours `0x800CCC40`/`0x800CCC44`;
+  - current tint `0x800C90D0`, where `80 80 80` is neutral.
+- `can_blend` now requires no fade and a neutral tint. The idle vblank also
+  checks it, because a fade can start during a tick.
+- `work/roundtrip.py` (church → world map → town) gives a per-frame
+  brightness sequence identical to vanilla.
+
 ### Bugs found on the way (worth remembering)
 
 - **Load delay slot.** `lw $ra, 16($sp)` directly followed by `jr $ra`
