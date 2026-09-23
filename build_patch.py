@@ -36,6 +36,9 @@ except where noted:
 5. Random encounters: Reunion forces one battle every 70 steps.  The
    original per-step roll against the area's rate is back, with a 25-step
    grace period after each fight.
+
+6. Faster walk-up in battle: the plain melee attack walks to the enemy in
+   6 updates instead of 12 (same distance), leaving the swing untouched.
 """
 import struct
 import sys
@@ -238,6 +241,23 @@ ENCOUNTER_AT = 0x8006E040
 NO_BATTLE = 0x8006ED98
 
 
+# --- 6. Faster walk-up in battle ---
+# Battle actors are updated at 30 Hz on a stack copy (0x8001E208 loop); the
+# walk-up is state 0x140.  Its setup (jump table 0x800C51D8, by attack type)
+# sets velocity = distance / N, and the per-type handler (table 0x800C5218)
+# sets $s5 = updates spent walking and $s1 = total updates for the action.
+# The plain melee attack (types 0, 12, 13, 14) walks 12 updates at d/14 and
+# ends at 17.  Walking 6 updates at d/7 covers the same distance and keeps
+# the 5 updates after the walk (swing, hit) unchanged, so it ends at 11.
+# Types 4 and 9 share the d/14 setup but walk only 5 updates; they are moved
+# to type 10's identical d/14 setup so they keep their original motion.
+APPROACH_DIV_AT = 0x800228D8          # addiu $v0, $zero, 14
+APPROACH_TABLE = 0x800C51D8
+APPROACH_KEEP_TYPES = (4, 9)
+APPROACH_KEEP_SETUP = 0x80022B48      # identical d/14 setup (type 10)
+MELEE_TIMING = (0x80022C98, 0x80022CA4)   # addiu $s5,12 / b / addiu $s1,17
+
+
 # Run tuning.  With friction f (x/256 per update) and accel multiplier M,
 # top speed is M*(1-f)/f times walking speed (walking uses f = 1/2), and
 # the higher f the quicker it gets there.  Field logic runs at 30 Hz, so the
@@ -346,6 +366,21 @@ def main(src_bin, out_bin):
         branch(BEQ, AT_REG, ENCOUNTER_AT + 16, NO_BATTLE),
     ])
     print(f"encounters: original roll, {GRACE_STEPS}-step grace period")
+
+    o = APPROACH_DIV_AT - base
+    assert exe[o:o + 4] == assemble("addiu $v0, $zero, 14", 0)
+    exe[o:o + 4] = assemble("addiu $v0, $zero, 7", 0)
+    for t in APPROACH_KEEP_TYPES:
+        o = APPROACH_TABLE + 4 * t - base
+        assert struct.unpack_from("<I", exe, o)[0] == APPROACH_DIV_AT
+        struct.pack_into("<I", exe, o, APPROACH_KEEP_SETUP)
+    for blk in MELEE_TIMING:
+        o = blk - base
+        assert exe[o:o + 4] == assemble("addiu $s5, $zero, 12", 0)
+        assert exe[o + 8:o + 12] == assemble("addiu $s1, $zero, 17", 0)
+        exe[o:o + 4] = assemble("addiu $s5, $zero, 6", 0)
+        exe[o + 8:o + 12] = assemble("addiu $s1, $zero, 11", 0)
+    print("battle walk-up: melee 12 -> 6 updates")
 
     vp_to_hp(exe, [a - base for a in VP_EXE])
     resius = bytearray(disc.read_file(r"SYSTEM\RESIUS.DAT"))

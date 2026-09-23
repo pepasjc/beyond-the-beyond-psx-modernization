@@ -12,6 +12,9 @@ Shadow501.
   The whole party runs, not just the leader. Running reaches full speed
   within one update, so the scroll stays even from tile to tile. A 1.5×
   preset is available for smaller scroll steps.
+- **Faster battle walk-up:** the plain melee attack reaches the enemy in half
+  the time (6 updates instead of 12, same distance). The swing, hit and
+  damage timing after the walk are unchanged.
 - **HP instead of VP:** menus, status screens and item/spell names ("HP Up",
   "Everyone's HP Heal") say HP.
 - **Rebalanced rewards:** EXP ×2.5, gold ×4.
@@ -88,9 +91,12 @@ docstring at the top of `build_patch.py` for each change.
 | Random encounter check | `0x8006DCA0` (roll at `0x8006E040`) |
 | Enemy-defeat rewards | `0x800423F8`, `0x80042490` |
 | Battle EXP / gold totals | `0x800F9B08` / `0x800F9B0C` |
-| Battle actors (`0x48` bytes each) | `0x800F9B20` |
+| Battle actors (`0x48` bytes each: x/y/z, velocity at `+8`, state `+0x14`, counter `+0x16`) | `0x800F9B20` |
+| Battle actor update loop (works on a stack copy at `sp+0xC0`) | `0x8001E208` |
+| Battle state jump table (`0x140` = walk-up, `0x10E` = walk back) | `0x800C4C6C` |
+| Walk-up setup by attack type / timing by attack type | `0x800C51D8` / `0x800C5218` |
 
-The field logic runs at 30 Hz. Walking moves 4 px per update, running at 2×
+The field logic and battle actors both update at 30 Hz. Walking moves 4 px per update, running at 2×
 moves 8 px.
 
 ## Tools
@@ -107,6 +113,16 @@ moves 8 px.
 
 The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 (set `EMURUN_DIR`).
+
+`debug/` holds test-only tools:
+
+| File | Purpose |
+|---|---|
+| `test_build.py` | Builds `work/test.bin`, where every step starts a battle (fixed encounter area, set with `AREA`), even in towns |
+| `nav.py` | Restores a Beetle savestate, plays a list of moves, saves a state and a screenshot |
+| `battle_attack.py` | Starts a battle, attacks with everyone, logs Finn's walk and records an MP4 |
+| `battle_walk_watch.lua` | PCSX-Redux script: write breakpoints on the party's battle position/velocity, logs every writer PC |
+| `play_redux.bat` | Opens PCSX-Redux with the test disc and that script, for someone to play while it records |
 
 ## Known limits
 
