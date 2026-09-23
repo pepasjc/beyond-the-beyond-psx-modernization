@@ -1,0 +1,16 @@
+# Game data is copyrighted: never commit discs, executables or saves.
+*.bin
+*.cue
+*.chd
+*.iso
+*.img
+*.exe
+*.mcd
+*.sav
+*.srm
+
+# Local test output
+shots/
+clips/
+work/
+__pycache__/
