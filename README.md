@@ -1,9 +1,12 @@
 # Beyond the Beyond — PSX Modernization
 
 Quality-of-life patch for **Beyond the Beyond** (PlayStation, USA, SCUS-94702).
-It applies to the original game, or on top of the fan patch
-**Beyond the Beyond – Reunion** by Skiller and Shadow501 to keep that patch's
-stat rebalance and fixes.
+
+This project was inspired by
+[Beyond the Beyond – Reunion](https://www.romhacking.net/hacks/9516/) by
+Skiller and Shadow501. After playing it, we decided to do our own take on
+modernizing the game: controls, movement, pacing and rewards, built directly
+on the original release.
 
 ## Features
 
@@ -24,27 +27,16 @@ stat rebalance and fixes.
 - **Reward multipliers:** EXP ×2.5 and gold ×2 by default. Both can be
   changed at build time (`--exp 1|1.5|2|2.5|3|4`, `--gold 1|2|4`).
 - **Random encounters:** the original per-step roll against each area's rate
-  is restored. After every fight there is a 25-step grace period, so there
-  are no back-to-back battles. On average there is a fight every ~36–50
-  steps instead of Reunion's fixed one every 70.
-- **Bug fix (Reunion base):** in Reunion, one of the enemy-defeat paths
-  looked up gold with a stale monster id. Every enemy now pays its own gold.
+  stays, plus a 25-step grace period after every fight, so there are no
+  back-to-back battles. On average there is a fight every ~36–50
+  steps, instead of every ~11–25 in the original.
 
 ## Credits
 
-- **Original patch: [Beyond the Beyond – Reunion](https://www.romhacking.net/hacks/9516/)**
-  - **Skiller:** 1.0 (reduced encounter rate, encounters disabled through
-    the picture-puzzle escape until Zalagoon) and 1.2 (double experience).
-  - **Shadow501:** 1.1 (increased gold, Percy stays in the party),
-    1.3 (character rebalance, Samson no longer affected by the Ramue curse)
-    and 1.4 (gold ×3, Samson's armor colours to match the cover art).
-
-  Reunion 1.4 is optional. On a Reunion disc (`Beyond the Beyond - Reunion
-  (Ver 1.4).PPF`, 158 records / 237 bytes) its data changes are kept: the
-  stat rebalance (`SYSTEM/RESIUS.DAT`), the dialog and battle-graphics edits.
-  Its executable changes are all replaced: rewards and encounters by this
-  patch's code, and its curse-flag change by the original instruction. The
-  executable comes out identical on either base.
+- **Inspiration: [Beyond the Beyond – Reunion](https://www.romhacking.net/hacks/9516/)**
+  by **Skiller** and **Shadow501**. Their patch showed how much a few
+  quality-of-life changes help this game; this project is our own take on
+  the idea and contains none of their code or data.
 - **Beyond the Beyond** © 1995/1996 Sony Computer Entertainment, developed by
   Camelot Software Planning. This repository contains no game data.
 - **Emulator test harness:** built on `emurun.py` from the Snatcher translation
@@ -58,15 +50,14 @@ stat rebalance and fixes.
 You need:
 
 - A dump of Beyond the Beyond (USA) as a single-track `MODE2/2352` `.bin`,
-  CRC32 `453917AF`. Optionally apply the Reunion 1.4 PPF to it first (e.g.
-  with PPF-O-Matic or ppfdev); the build detects which one it got.
+  CRC32 `453917AF`.
 - Python 3.10+ with `pip install keystone-engine capstone`.
 - `chdman` (MAME tools) to convert CHD ↔ BIN/CUE.
 
 ```sh
-chdman extractcd -i "Beyond the Beyond (USA).chd" -o base.cue -ob base.bin
-python build_patch.py base.bin modern.bin                          # defaults
-python build_patch.py base.bin modern.bin --run 1.5x --exp 2 --gold 1
+chdman extractcd -i "Beyond the Beyond (USA).chd" -o original.cue -ob original.bin
+python build_patch.py original.bin modern.bin                          # defaults
+python build_patch.py original.bin modern.bin --run 1.5x --exp 2 --gold 1
 # write a cue for modern.bin, then:
 chdman createcd -i modern.cue -o "Beyond the Beyond (USA).chd"
 ```
@@ -122,7 +113,7 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 
 | File | Purpose |
 |---|---|
-| `test_build.py` | Builds `work/test.bin`, where every step starts a battle (fixed encounter area, set with `AREA`), even in towns |
+| `test_build.py` | Builds `work/test.bin` from `BASE`, where every step starts a battle (fixed encounter area, set with `AREA`), even in towns |
 | `nav.py` | Restores a Beetle savestate, plays a list of moves, saves a state and a screenshot |
 | `battle_rewards.py` | Fights a few rounds on the test disc and prints the EXP and gold totals (set `EXP`/`GOLD` for `test_build.py`) |
 | `battle_attack.py` | Starts a battle, attacks with everyone, logs Finn's walk and records an MP4 |
@@ -134,7 +125,3 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 - NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.
-- The curse works as in the original game. Reunion's change at `0x80073B80`
-  (the setter for status bit 1 of a character record, byte `0x44`, stored
-  into byte `7`, the last byte of the character's name, so the bit was never
-  set) is reverted on a Reunion disc.

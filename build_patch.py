@@ -2,12 +2,11 @@
 
     python build_patch.py <in.bin> <out.bin> [--run 2x|1.5x] [--exp N] [--gold N]
 
-Input is a MODE2/2352 .bin of Beyond the Beyond (USA): either the original
-dump (CRC32 453917AF) or that dump with "Beyond the Beyond - Reunion" 1.4 by
-Skiller and Shadow501 applied (https://www.romhacking.net/hacks/9516/).  On a
-Reunion disc its data changes (stats, dialog, Samson's colours) are kept;
-its reward, encounter and curse-flag code is replaced by this patch's or
-the original's.
+Input is a MODE2/2352 .bin of the original Beyond the Beyond (USA), CRC32
+453917AF.  Inspired by "Beyond the Beyond - Reunion" by Skiller and
+Shadow501 (https://www.romhacking.net/hacks/9516/); a Reunion 1.4 disc is
+also accepted, in which case its executable changes are replaced and the
+result is the same executable.
 Changes, all in SCUS_947.02 except where noted:
 
 1. Swap X and Triangle.  The game's per-frame input routine (0x80011350)
