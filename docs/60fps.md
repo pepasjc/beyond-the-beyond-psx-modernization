@@ -54,6 +54,51 @@ every vblank. GPU time is not measured yet.
    drawing part of the callbacks split from the logic part, and a second
    display list per update. Logic timing stays exactly as shipped.
 
+## Drawing pipeline (found)
+
+On each 30 Hz vblank, `0x800115CC` (when `0x800F99B8` graphics-enable is set
+and the parity bit is set):
+
+1. optional load-meter printout (event flag 0x10, `FntPrint` `0x800AFF74`);
+2. `DrawSync(0)` — `0x800ACAFC`;
+3. `PutDispEnv(db+0x5C)` `0x800AD130`, `PutDrawEnv(db)` `0x800AD040`,
+   `DrawOTag(db+0x70)` `0x800ACFD8`, where `db` = `*(0x800F9988)`;
+4. swap the double buffer — `0x800114BC`;
+5. read the pad, then the callbacks build the next picture into the new
+   buffer.
+
+So a picture built on vblank N is shown from vblank N+2; the in-between
+vblank draws nothing and swaps nothing.
+
+Field callbacks:
+
+- `0x80085EFC` — camera + map. Moves the camera struct at `0x8010DF80`
+  (position `+0/+4`, target `+8/+0xC`, velocity `+0x34/+0x38`, shake
+  `+0x40/+0x42`), then draws each map layer through `0x80084534` →
+  six layer renderers (jump table `0x800C7F50`: `0x80083C94`, `0x80082EB4`,
+  `0x800825BC`, `0x80084054`, `0x80083854`, `0x80082A48`).
+- `0x80086550` — object physics (logic), sprite setup `0x80088D7C` (draw,
+  but also advances animation counters `+0x58`, `+0x5B`), camera follow
+  `0x80085BD8` (logic).
+- `0x80047684` — (to identify).
+
+## Plan for option 2
+
+On the in-between vblank:
+
+1. keep the previous and current positions of the camera and every visible
+   object (or last velocity);
+2. set them to the midpoint, run only the drawing parts (map layers + sprite
+   setup without advancing animation counters) into the other buffer;
+3. `DrawSync`/`PutDispEnv`/`PutDrawEnv`/`DrawOTag` + swap, as the 30 Hz path
+   does;
+4. put the real positions back.
+
+The hard part is step 2: separating drawing from state changes inside the
+layer renderers and `0x80088D7C`, and finding room for the new code (the
+executable has no free space; a code cave has to come from compacting
+existing routines or from unused RAM loaded by an overlay).
+
 Next steps: find where the display list is submitted (DrawOTag / buffer
 swap) and which of the three callbacks draw; measure GPU time; prototype
 option 2 for the camera + player + followers only.
