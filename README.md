@@ -31,10 +31,13 @@ Shadow501.
     1.3 (character rebalance, Samson no longer affected by the Ramue curse)
     and 1.4 (gold ×3, Samson's armor colours to match the cover art).
 
-  This project was built on a copy of Reunion that only changes
-  `SCUS_947.02` (EXP and gold ×4 and a battle every 70 steps). That is
-  probably an earlier Reunion release, before the data-file changes
-  of 1.3/1.4.
+  This project applies on top of **Reunion 1.4** (`Beyond the Beyond - Reunion
+  (Ver 1.4).PPF`, 158 records / 237 bytes). All of Reunion's changes are kept:
+  the stat rebalance (`SYSTEM/RESIUS.DAT`), the dialog and battle-graphics
+  edits, and the executable changes. Only its reward multipliers and its
+  encounter rule are adjusted here (see Features). In the executable, Reunion
+  multiplies both EXP and gold by 4 (`sll $v0,$v0,2`) and replaces the
+  random encounter roll with one battle every 70 steps.
 - **Beyond the Beyond** © 1995/1996 Sony Computer Entertainment, developed by
   Camelot Software Planning. This repository contains no game data.
 - **Emulator test harness:** built on `emurun.py` from the Snatcher translation
@@ -48,7 +51,8 @@ Shadow501.
 You need:
 
 - A dump of Beyond the Beyond (USA) as a single-track `MODE2/2352` `.bin`,
-  CRC32 `453917AF`, with the Reunion patch applied.
+  CRC32 `453917AF`, with the Reunion 1.4 PPF applied (e.g. with PPF-O-Matic
+  or ppfdev).
 - Python 3.10+ with `pip install keystone-engine capstone`.
 - `chdman` (MAME tools) to convert CHD ↔ BIN/CUE.
 
@@ -109,6 +113,6 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 - NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.
-- Reunion also redirects a monster-table flag write at `0x80073B80` (byte
-  `0x44` bit 1 → byte `7`). Its purpose has not been identified; it is left
-  as is.
+- Reunion redirects a flag write at `0x80073B80` (byte `0x44` bit 1 of a
+  monster/party table entry → byte `7`). This is probably its "Samson is no
+  longer affected by the Ramue curse" change. It is left as is.

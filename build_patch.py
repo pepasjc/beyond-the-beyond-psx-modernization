@@ -2,9 +2,10 @@
 
     python build_patch.py <reunion.bin> <out.bin> [2x|1.5x]
 
-Input is a MODE2/2352 .bin of Beyond the Beyond (USA) with the
-"Beyond the Beyond - Reunion" patch by Skiller and Shadow501 applied
-(https://www.romhacking.net/hacks/9516/).  Changes, all in SCUS_947.02
+Input is a MODE2/2352 .bin of Beyond the Beyond (USA) (CRC32 453917AF)
+with "Beyond the Beyond - Reunion" 1.4 by Skiller and Shadow501 applied
+(https://www.romhacking.net/hacks/9516/).  Reunion's other changes (stat
+tables, dialog, battle graphics) are left untouched.  Changes, all in SCUS_947.02
 except where noted:
 
 1. Swap X and Triangle.  The game's per-frame input routine (0x80011350)
@@ -28,7 +29,7 @@ except where noted:
 3. Rename VP to HP in menu labels and item/spell names (exe and
    SYSTEM\RESIUS.DAT).  Dialog (.TLK) is compressed and not touched.
 
-4. Rebalance Reunion's rewards: EXP 2.5x (Reunion's copy here gives 4x),
+4. Rebalance Reunion's rewards: EXP 2.5x (Reunion's code gives 4x),
    gold stays 4x, and Reunion's gold-lookup slip (a stale monster id in one
    of the two enemy-defeat paths) is fixed.
 
