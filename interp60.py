@@ -27,10 +27,11 @@ behave exactly as in the original: drawing on the idle vblank outside the
 field hangs loaders (the display buffers are not set up there).
 
 Space: the code lives in a function nothing on the disc calls or points to
-(0x8009A670, 476 words); scratch RAM at 0x801E4800 stays zero on the field.
+(0x8009A670, 476 words); scratch RAM at 0x801F8000 (see SCRATCH).
 The per-vblank handler's debug load-meter printout (0x80011648, only shown
 with debug event flag 0x10) is dropped to make room for a trampoline.
 """
+import re
 import struct
 
 DB0, DB1 = 0x800DB890, 0x800EA90C          # double-buffer structs
@@ -43,16 +44,24 @@ CAVE = 0x8009A670                           # dead function, 476 words
 CAVE_WORDS = 476
 TRAMP = 0x80011650
 
-# scratch RAM (zero on the field)
-PREV_LAYERS = 0x801E4800                    # 3 x (x, y)
-PREV_OBJS = 0x801E4820                      # 64 x (x, y)
-SNAP_OBJS = 0x801E4A20                      # 0x1C00
-SNAP_LAYERS = 0x801E6620                    # 0xF0
-SNAP_G1 = 0x801E6710                        # 0x800CDD94, 0x18
-SNAP_G2 = 0x801E6730                        # 0x800D0030, 0x1C
-SNAP_CNT = 0x801E6750                       # 0x800CE040
+# Scratch RAM: 0x801F7800..0x801FC000 is never written by the game (random
+# soaks through towns, the world map, battles and menus): it lies between the
+# highest fixed file load (a table at 0x801F3A00) and the deepest the stack
+# goes (~0x801FC000).  0x801E4800.., used at first, is free in Marion town but
+# holds map data elsewhere (files load at 0x801E2000 and 0x801E9800).
+SCRATCH = 0x801F8000
+PREV_LAYERS = SCRATCH                       # 3 x (x, y)
+PREV_OBJS = SCRATCH + 0x20                  # 64 x (x, y)
+SNAP_OBJS = SCRATCH + 0x220                 # 0x1C00
+SNAP_LAYERS = SCRATCH + 0x1E20              # 0xF0
+SNAP_G1 = SCRATCH + 0x1F10                  # 0x800CDD94, 0x18
+SNAP_G2 = SCRATCH + 0x1F30                  # 0x800D0030, 0x1C
+SNAP_CNT = SCRATCH + 0x1F50                 # 0x800CE040
+assert SNAP_CNT + 4 <= 0x801FA000
 JUMP = 0x1800                               # one tile: larger moves are not blended
-STREAK = 0x801E6780                         # consecutive ticks of plain field play
+# consecutive ticks of plain field play: the cave's last word, so nothing but
+# this code can ever write it
+STREAK = CAVE + 4 * (CAVE_WORDS - 1)
 WARMUP = 45                                 # ticks before in-between pictures start
 
 
@@ -102,19 +111,51 @@ idle:
 other_db0:
     move  $s0, $t1
 have_other:
+    # The tick picture (top half) is finished once the GPU is idle: show it
+    # now, at the top of the frame (GP1 05, display start 0,0).  Switching
+    # after the in-between drawing tore the screen ~115 lines down.
     jal   {DRAWSYNC}
     move  $a0, $zero
+    lui   $t0, 0x1f80
+    lui   $t1, 0x0500
+    sw    $t1, 0x1814($t0)
     jal   blend_draw
     nop
 show:
-    {LA_A0_DB1D}
-    jal   {PUTDISP}
+    # Submit without libgpu (its queue is not built for pictures fed from
+    # the idle vblank).  Wait for the queue to drain (the sprite setup
+    # queues a CLUT upload) and the GPU to take commands, put buffer 1's
+    # prebuilt DR_ENV packet (DRAWENV+0x1C: draw area, offset, clear) in
+    # front of the ordering table and start DMA channel 2 on it.
+    jal   {DRAWSYNC}
+    move  $a0, $zero
+    lui   $t0, 0x1f80
+    lui   $t2, 0x0400
+gpu_wait:
+    lw    $t1, 0x1814($t0)
     nop
-    {LA_A0_DB1}
-    jal   {PUTDRAW}
+    and   $t1, $t1, $t2
+    beqz  $t1, gpu_wait
     nop
-    jal   {DRAWOTAG}
-    addiu $a0, $s0, 0x70
+    {LA_T3_DRENV}
+    lw    $t4, 0($t3)
+    lui   $t5, 0xff00
+    and   $t4, $t4, $t5
+    addiu $t5, $s0, 0x70
+    sll   $t5, $t5, 8
+    srl   $t5, $t5, 8
+    or    $t4, $t4, $t5
+    sw    $t4, 0($t3)
+    lui   $t1, 0x0400
+    ori   $t1, $t1, 2
+    sw    $t1, 0x1814($t0)
+    sll   $t3, $t3, 8
+    srl   $t3, $t3, 8
+    sw    $t3, 0x10a0($t0)
+    sw    $zero, 0x10a4($t0)
+    lui   $t1, 0x0100
+    ori   $t1, $t1, 0x0401
+    sw    $t1, 0x10a8($t0)
 idle_out:
     lw    $ra, 16($sp)
     lw    $s0, 20($sp)
@@ -133,9 +174,11 @@ tick_env:
     sw    $s0, 20($sp)
     jal   blend_ok
     nop
+    bnez  $v0, te_db0
     lui   $s0, 0x8010
-    beqz  $v0, te_have
+    b     te_have
     lw    $s0, -0x6678($s0)
+te_db0:
     {LA_S0_DB0}
 te_have:
     jal   {PUTDISP}
@@ -335,6 +378,7 @@ draw_layers:
     lui   $at, 0x800d
     sw    $t0, -0x1fc0($at)
     lw    $ra, 16($sp)
+    nop                         # load delay: jr would still see the old $ra
     jr    $ra
     addiu $sp, $sp, 24
 
@@ -406,6 +450,8 @@ TRACE_COUNT = NL.join(["    lui   $at, 0x801e", "    lw    $v1, {off}($at)", "  
 TRACE_MARK = NL.join(["    lui   $at, 0x801e", "    addiu $v1, $zero, {n}",
                       "    sw    $v1, 0x6760($at)"]) + NL
 TRACE_COUNTERS = (("idle:", 0x6770), ("tick_env:", 0x6774), ("save_prev:", 0x6778), ("blend_draw:", 0x677C))
+TRACE_MARKS_SHOW = (("    lui   $t0, 0x1f80" + NL + "    lui   $t2, 0x0400", 21), ("    {LA_T3_DRENV}", 22),
+                    ("    lui   $t1, 0x0400" + NL + "    ori   $t1, $t1, 2", 23))
 TRACE_MARKS = (("    jal   {DRAWSYNC}", 1), ("    jal   blend_draw", 2), ("    # redirect the drawing to buffer s0", 3),
                ("    jal   {CLEAROT}", 4), ("    # objects: +0x1c / +0x20", 5), ("    jal   {MAP_FINISH}", 6),
                ("    jal   {SPRITES}", 7), ("    # put everything back", 8), ("show:", 9), ("idle_out:", 10))
@@ -428,6 +474,7 @@ SKIPS = {
     "snapg1": [(_pair("LA_A0_SNAPG1", "LA_A1_G1"), NOP3), (_pair("LA_A0_G1", "LA_A1_SNAPG1"), NOP3)],
     "g2": [(_pair("LA_A0_SNAPG2", "LA_A1_G2"), NOP3), (_pair("LA_A0_G2", "LA_A1_SNAPG2"), NOP3)],
     "testjal": [("    # redirect the drawing to buffer s0", "    jal   blend_ok" + NL + "    nop" + NL + "    # redirect the drawing to buffer s0")],
+    "hwprobe": [("show:" + NL + "    # Submit", "show:" + NL + "    lui   $t0, 0x1f80" + NL + "    lw    $t1, 0x1814($t0)" + NL + "    lw    $t2, 0x10a8($t0)" + NL + "    lui   $at, 0x801e" + NL + "    sw    $t1, 0x6790($at)" + NL + "    sw    $t2, 0x6794($at)" + NL + "    lw    $t1, 0x10f4($t0)" + NL + "    nop" + NL + "    sw    $t1, 0x6798($at)" + NL + "    # Submit")],
     "g1zero": [("    jal   copy" + NL + "    addiu $a2, $zero, 0x18", "    jal   copy" + NL + "    addiu $a2, $zero, 0")],
 }
 
@@ -437,6 +484,9 @@ def source():
     if TRACE:
         for label, off in TRACE_COUNTERS:
             s = s.replace(label + NL, label + NL + TRACE_COUNT.format(off=hex(off)), 1)
+        for needle, n in TRACE_MARKS_SHOW:
+            assert needle in s, needle
+            s = s.replace(needle, TRACE_MARK.format(n=n) + needle, 1)
         for needle, n in TRACE_MARKS:
             assert needle in s, needle
             s = s.replace(needle, TRACE_MARK.format(n=n) + needle, 1)
@@ -447,7 +497,7 @@ def source():
             assert old in s, (key, old)
             s = s.replace(old, new)
     subs = {
-        "LA_T1_DB0": la("$t1", DB0), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
+        "LA_T1_DB0": la("$t1", DB0), "LA_T3_DRENV": la("$t3", DB1 + 0x1C), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
         "LA_A0_DB1D": la("$a0", DB1 + 0x5C), "LA_A0_DB1": la("$a0", DB1),
         "LA_T0_CBS": la("$t0", CBS), "LA_T0_WIN": la("$t0", WINDOWS),
         "LA_T2_CB0": la("$t2", FIELD_CBS[0]), "LA_T2_CB1": la("$t2", FIELD_CBS[1]),
@@ -477,6 +527,52 @@ def source():
     return "\n".join(line.split("#")[0] for line in s.splitlines())
 
 
+def resolve_calls(src, base):
+    """Replace "jal label" / "j label" with absolute targets.  keystone
+    resolves them nondeterministically (see apply); branches are
+    PC-relative and fine.  Every source line is one instruction (no
+    expanding pseudo-ops), so a label's address is its line count."""
+    labels, n = {}, 0
+    for line in src.splitlines():
+        t = line.strip()
+        if t.endswith(":"):
+            labels[t[:-1]] = base + 4 * n
+        elif t:
+            n += 1
+    out = []
+    for line in src.splitlines():
+        m = re.fullmatch(r"\s*(jal|j)\s+([A-Za-z_]\w*)\s*", line)
+        out.append(f"    {m.group(1)} {labels[m.group(2)]:#x}" if m else line)
+    return NL.join(out), n
+
+
+def check_load_delays(code):
+    """R3000 load delay: the instruction right after a load still sees the
+    register's old value (lw $ra; jr $ra returns to the *previous* $ra).
+    Refuse any load whose next instruction reads or writes the loaded
+    register.  A load in the delay slot of an unconditional jump is followed
+    by the jump target instead, so it is skipped."""
+    words = struct.unpack(f"<{len(code) // 4}I", code)
+    for i in range(len(words) - 1):
+        w, nxt = words[i], words[i + 1]
+        op, rt = w >> 26, (w >> 16) & 0x1F
+        if op not in (0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26) or rt == 0:
+            continue
+        if i > 0:
+            p = words[i - 1]
+            pop = p >> 26
+            if pop in (2, 3) or (pop == 0 and (p & 0x3F) in (8, 9)) or (pop == 4 and (p >> 16) & 0x3FF == 0):
+                continue
+        nop_, nrs, nrt, nrd = nxt >> 26, (nxt >> 21) & 0x1F, (nxt >> 16) & 0x1F, (nxt >> 11) & 0x1F
+        reads = {nrs}
+        if nop_ in (0, 4, 5) or 0x28 <= nop_ <= 0x2E:
+            reads.add(nrt)
+        writes = {nrd} if nop_ == 0 else ({nrt} if 0x08 <= nop_ <= 0x0F or 0x20 <= nop_ <= 0x26 else set())
+        if op in (0x22, 0x26) and nop_ in (0x22, 0x26):
+            continue                                    # lwl/lwr pair
+        assert rt not in reads | writes, f"load delay hazard at +{i * 4:#x}: register {rt} used by the next instruction"
+
+
 def apply(exe, base, assemble, branch, BEQ):
     def at(a, n=4):
         return exe[a - base:a - base + n]
@@ -485,12 +581,22 @@ def apply(exe, base, assemble, branch, BEQ):
         exe[a - base:a - base + len(code)] = code
 
     assert at(CAVE) == assemble("addiu $sp, $sp, -0x188", 0), "0x8009A670 is not the expected dead function"
-    src = source()
+    src, words = resolve_calls(source(), CAVE)
     code = assemble(src, CAVE)
+    assert len(code) == 4 * words, (len(code) // 4, words)
+    # keystone sometimes turns a call to a label into a $gp-relative PIC
+    # call ("lw $t9, 0($gp); jalr $t9"), even for the same source that
+    # assembled fine a moment earlier: refuse that.
+    for i in range(0, len(code), 4):
+        w = struct.unpack_from("<I", code, i)[0]
+        assert ((w >> 21) & 0x1F) != 28 or (w >> 26) not in (0x23, 0x2B), f"$gp access at +{i:#x}: unresolved label?"
+        assert w != 0x0320F809, f"jalr $t9 at +{i:#x}: unresolved label?"
+    check_load_delays(code)
     if PAD_TO:
         code += assemble("nop", 0) * (PAD_TO - len(code) // 4)
-    assert len(code) <= CAVE_WORDS * 4, len(code) // 4
+    assert len(code) <= (CAVE_WORDS - 1) * 4, len(code) // 4
     put(CAVE, code)
+    put(STREAK, struct.pack("<I", 0))
     idle_entry, tick_env, save_prev = CAVE, CAVE + 8, CAVE + 16
 
     # debug load-meter printout -> skipped; its space holds the trampoline
