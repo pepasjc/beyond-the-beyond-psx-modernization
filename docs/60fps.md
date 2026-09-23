@@ -99,6 +99,7 @@ layer renderers and `0x80088D7C`, and finding room for the new code (the
 executable has no free space; a code cave has to come from compacting
 existing routines or from unused RAM loaded by an overlay).
 
-Next steps: find where the display list is submitted (DrawOTag / buffer
-swap) and which of the three callbacks draw; measure GPU time; prototype
-option 2 for the camera + player + followers only.
+Next steps: identify `0x80047684`; list every state write inside the six
+layer renderers and `0x80088D7C`; measure GPU time per picture (DrawSync
+wait); find room for the in-between-frame code; prototype with the camera
+only (map layers at the interpolated camera, sprites unchanged).
