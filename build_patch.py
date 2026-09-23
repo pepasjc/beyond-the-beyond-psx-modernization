@@ -5,8 +5,9 @@
 Input is a MODE2/2352 .bin of Beyond the Beyond (USA): either the original
 dump (CRC32 453917AF) or that dump with "Beyond the Beyond - Reunion" 1.4 by
 Skiller and Shadow501 applied (https://www.romhacking.net/hacks/9516/).  On a
-Reunion disc its data changes (stats, dialog, Samson's colours) and its
-curse-flag change are kept; its reward and encounter code is replaced.
+Reunion disc its data changes (stats, dialog, Samson's colours) are kept;
+its reward, encounter and curse-flag code is replaced by this patch's or
+the original's.
 Changes, all in SCUS_947.02 except where noted:
 
 1. Swap X and Triangle.  The game's per-frame input routine (0x80011350)
@@ -41,6 +42,9 @@ Changes, all in SCUS_947.02 except where noted:
 
 6. Faster walk-up in battle: the plain melee attack walks to the enemy in
    6 updates instead of 12 (same distance), leaving the swing untouched.
+
+7. Curse flag as in the original game (undoes Reunion's change at
+   0x80073B80, which also clobbered the last byte of character names).
 """
 import struct
 import sys
@@ -260,6 +264,14 @@ ENCOUNTER_AT = 0x8006E040
 NO_BATTLE = 0x8006ED98
 
 
+# --- 7. Vanilla curse flag ---
+# Reunion changes the setter for status bit 1 of a character record (byte
+# 0x44) to store into byte 7 instead, the last byte of the 8-byte name, so
+# the bit is never set for anyone (its "Samson is not cursed by Ramue").
+# Put the original store back so the curse works as in the original game.
+CURSE_STORE_AT = 0x80073B80
+
+
 # --- 6. Faster walk-up in battle ---
 # Battle actors are updated at 30 Hz on a stack copy (0x8001E208 loop); the
 # walk-up is state 0x140.  Its setup (jump table 0x800C51D8, by attack type)
@@ -423,6 +435,13 @@ def main(src_bin, out_bin):
         exe[o:o + 4] = assemble("addiu $s5, $zero, 6", 0)
         exe[o + 8:o + 12] = assemble("addiu $s1, $zero, 11", 0)
     print("battle walk-up: melee 12 -> 6 updates")
+
+    o = CURSE_STORE_AT - base
+    vanilla_store = assemble("sb $t9, 0x44($a2)", 0)
+    if exe[o:o + 4] == assemble("sb $t9, 7($a2)", 0):
+        exe[o:o + 4] = vanilla_store
+        print("curse flag: Reunion's change reverted")
+    assert exe[o:o + 4] == vanilla_store
 
     vp_to_hp(exe, [a - base for a in VP_EXE])
     resius = bytearray(disc.read_file(r"SYSTEM\RESIUS.DAT"))

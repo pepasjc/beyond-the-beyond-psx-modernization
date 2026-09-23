@@ -41,9 +41,10 @@ stat rebalance and fixes.
 
   Reunion 1.4 is optional. On a Reunion disc (`Beyond the Beyond - Reunion
   (Ver 1.4).PPF`, 158 records / 237 bytes) its data changes are kept: the
-  stat rebalance (`SYSTEM/RESIUS.DAT`), the dialog and battle-graphics edits,
-  and its curse-flag change at `0x80073B80`. Its reward multipliers and
-  encounter rule are replaced by this patch's code.
+  stat rebalance (`SYSTEM/RESIUS.DAT`), the dialog and battle-graphics edits.
+  Its executable changes are all replaced: rewards and encounters by this
+  patch's code, and its curse-flag change by the original instruction. The
+  executable comes out identical on either base.
 - **Beyond the Beyond** © 1995/1996 Sony Computer Entertainment, developed by
   Camelot Software Planning. This repository contains no game data.
 - **Emulator test harness:** built on `emurun.py` from the Snatcher translation
@@ -133,8 +134,7 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 - NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.
-- On a Reunion disc, Reunion's change at `0x80073B80` stays: the setter for
-  status bit 1 of a character record (byte `0x44`) writes to byte `7`
-  instead, so the flag is never set for anyone. Byte 7 is the last byte of
-  the character's 8-byte name, so the status bits land there. This is
-  probably Reunion's "Samson is no longer affected by the Ramue curse" fix.
+- The curse works as in the original game. Reunion's change at `0x80073B80`
+  (the setter for status bit 1 of a character record, byte `0x44`, stored
+  into byte `7`, the last byte of the character's name, so the bit was never
+  set) is reverted on a Reunion disc.
