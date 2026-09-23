@@ -152,6 +152,44 @@ they use other callbacks.
 - Only active in plain field play: field callback set, no window, double
   buffering, after a 45-tick warm-up.
 
+### Never cost the game time (after the first MiSTer test)
+
+On the MiSTer the first version throttled the game and stalled for seconds
+on the world map. The design had two hard dependencies: the tick's
+`DrawSync` waited for the in-between picture, and the idle waited for the
+tick picture. The game advances only once per handler call, so any overrun
+slows it down (the tick/idle parity flips per vblank in an event handler,
+`0x800115B4`). The stall was libgpu's `DrawSync` timeout: libgpu takes
+every DMA 2 completion interrupt for one of its own queue entries.
+
+- Screen halves are no longer fixed. `NEXT` is the half with the newest
+  finished picture, `SHOWN` the half on screen. Every vblank shows `NEXT`
+  and draws into the other half. Showing half h and drawing half 1-h both
+  use buffer struct DB(1-h).
+- Idle: `settle` without waiting. If the tick picture isn't finished, or an
+  in-between picture is still in flight, it draws nothing.
+- DMA 2's interrupt is masked (DICR bit 18) while our picture draws. It is
+  given back to libgpu, flag acknowledged, once the picture is done.
+- Tick (`tick_pre`, in place of the handler's `DrawSync`): the in-between
+  picture gets until line 8. If it's later, that's a miss, and the tick
+  waits for it. Stopping DMA 2 half way through a list wedged libgpu's
+  queue (full queue, `DrawSync` timeout).
+- A miss also comes from idle work ending past line 240. A miss pauses the
+  in-between pictures for 2 s, then 4, 8, 16, 32 s (`FAILS`, reset on a
+  map change). Counting lost vblanks instead didn't work: the game drops
+  some on its own, e.g. right after a map load.
+- Test: `debug/smooth_build.py late=<line>` stalls the idle vblank to fake a
+  slow machine. Beetle results, 4000 frames:
+
+  | Build | Lost vblanks | Motion |
+  |---|---|---|
+  | Normal | 1 (same as vanilla) | 2 px every frame |
+  | late=235 (GPU-slow) | 1 | clean 30 fps |
+  | late=250 (CPU-slow) | 5 | then pictures switch off |
+
+- Code no longer fits one cave: blend_draw and save_prev live in a second
+  dead function, `0x800B4954` (251 words).
+
 ### Bugs found on the way (worth remembering)
 
 - **Load delay slot.** `lw $ra, 16($sp)` directly followed by `jr $ra`

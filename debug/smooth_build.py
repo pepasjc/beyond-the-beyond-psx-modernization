@@ -10,6 +10,11 @@ interp60.TRACE = "trace" in sys.argv
 for a in sys.argv:
     if a.startswith("pad="):
         interp60.PAD_TO = int(a[4:])
+for a in sys.argv:
+    if a.startswith("late="):
+        interp60.LATE = int(a[5:])
+    if a.startswith("submit="):
+        interp60.SUBMIT_LIMIT = int(a[7:])
 interp60.SKIP = tuple(a[5:] for a in sys.argv if a.startswith("skip="))
 bp.SMOOTH = True
 bp.main("original.bin", "work/smooth.bin")

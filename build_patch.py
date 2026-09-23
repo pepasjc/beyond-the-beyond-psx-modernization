@@ -446,7 +446,7 @@ def main(src_bin, out_bin):
     if SMOOTH:
         import interp60
         words = interp60.apply(exe, base, assemble, branch, BEQ)
-        print(f"60 Hz presentation: {words} words at {hex(interp60.CAVE)}")
+        print(f"60 Hz presentation: {words} words at {hex(interp60.CAVE)} and {hex(interp60.CAVE2)}")
 
     vp_to_hp(exe, [a - base for a in VP_EXE])
     resius = bytearray(disc.read_file(r"SYSTEM\RESIUS.DAT"))

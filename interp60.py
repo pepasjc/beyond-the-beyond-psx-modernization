@@ -42,6 +42,8 @@ LAYER_DRAW, MAP_FINISH, SPRITES = 0x80084534, 0x80084600, 0x80088D7C
 FIELD_CBS = (0x80085EFC, 0x80086550, 0x80047684)
 CAVE = 0x8009A670                           # dead function, 476 words
 CAVE_WORDS = 476
+CAVE2 = 0x800B4954                          # second dead function, 251 words:
+CAVE2_WORDS = 251                           # blend_draw, save_prev
 TRAMP = 0x80011650
 
 # Scratch RAM: 0x801F7800..0x801FC000 is never written by the game (random
@@ -62,6 +64,17 @@ JUMP = 0x1800                               # one tile: larger moves are not ble
 # consecutive ticks of plain field play: the cave's last word, so nothing but
 # this code can ever write it
 STREAK = CAVE + 4 * (CAVE_WORDS - 1)
+SHOWN = CAVE + 4 * (CAVE_WORDS - 2)         # half on screen (0 top, 1 bottom)
+NEXT = CAVE + 4 * (CAVE_WORDS - 3)          # half with the newest finished picture
+MID = CAVE + 4 * (CAVE_WORDS - 4)           # in-between picture in flight: half + 1
+COOL = CAVE + 4 * (CAVE_WORDS - 5)          # ticks left without in-between pictures
+DSAVE = CAVE + 4 * (CAVE_WORDS - 6)         # DICR's DMA 2 interrupt enable before ours
+FAILS = CAVE + 4 * (CAVE_WORDS - 7)         # misses on this map (cooldown doubles each)
+DATA_WORDS = 7
+WAIT_LIMIT = 8        # lines into the tick frame an in-between picture may still finish
+SUBMIT_LIMIT = 200    # no in-between picture submitted this late in the idle frame
+IDLE_LATE = 240       # the idle vblank's work ending this late counts as a miss
+COOLDOWN = 30         # cooldown unit: a first miss pauses 30 << 1 ticks (2 s), up to 30 << 5 (32 s)
 WARMUP = 45                                 # ticks before in-between pictures start
 
 
@@ -82,14 +95,20 @@ def la(reg, addr):
 
 
 CODE = """
-# entry points at fixed offsets: +0 idle, +8 tick_env, +16 save_prev
+# entry points at fixed offsets: +0 idle, +8 tick_env, +16 save_prev, +24 tick_pre
     j     idle
     nop
     j     tick_env
     nop
     j     save_prev
     nop
+    j     tick_pre
+    nop
 # ---------------------------------------------------------------- idle vblank
+# Show the tick picture (half NEXT) and draw an in-between picture into the
+# other half -- but only when that costs the game nothing: the tick picture
+# must already be finished (no waiting), no cooldown, and the drawing must
+# end early enough in the frame for the GPU to finish it by the next vblank.
 idle:
     addiu $sp, $sp, -40
     sw    $ra, 16($sp)
@@ -100,6 +119,47 @@ idle:
     jal   blend_ok
     nop
     beqz  $v0, idle_out
+    move  $a0, $zero
+    jal   settle
+    move  $a1, $zero
+    beqz  $v0, idle_out
+    lui   $t0, 0x800d
+    lw    $t1, -0xdc0($t0)
+    lw    $t2, -0xdbc($t0)
+    lui   $t3, 0x1f80
+    bne   $t1, $t2, idle_out
+    lw    $t4, 0x10a8($t3)
+    lui   $t5, 0x0100
+    and   $t4, $t4, $t5
+    bnez  $t4, idle_out
+    lw    $t4, 0x1814($t3)
+    lui   $t5, 0x0400
+    and   $t4, $t4, $t5
+    beqz  $t4, idle_out
+    nop
+    # show half h = NEXT through DB(1-h)'s DISPENV (GP1 05, display start)
+    {LA_T0_NEXT}
+    lw    $t1, 0($t0)
+    {LA_T2_SHOWN}
+    sw    $t1, 0($t2)
+    {LA_T3_DB1}
+    beqz  $t1, id_disp
+    nop
+    {LA_T3_DB0}
+id_disp:
+    lhu   $t4, 0x5c($t3)
+    lhu   $t5, 0x5e($t3)
+    lui   $t6, 0x0500
+    sll   $t5, $t5, 10
+    or    $t6, $t6, $t5
+    or    $t6, $t6, $t4
+    lui   $t0, 0x1f80
+    sw    $t6, 0x1814($t0)
+    {LA_T0_COOL}
+    lw    $t1, 0($t0)
+    nop
+    bnez  $t1, idle_out
+    # OT and packets: the buffer the tick picture came from (finished)
     lui   $s0, 0x8010
     lw    $s0, -0x6678($s0)
     {LA_T1_DB0}
@@ -111,25 +171,20 @@ idle:
 other_db0:
     move  $s0, $t1
 have_other:
-    # The tick picture (top half) is finished once the GPU is idle: show it
-    # now, at the top of the frame (GP1 05, display start 0,0).  Switching
-    # after the in-between drawing tore the screen ~115 lines down.
-    jal   {DRAWSYNC}
-    move  $a0, $zero
-    lui   $t0, 0x1f80
-    lui   $t1, 0x0500
-    sw    $t1, 0x1814($t0)
     jal   blend_draw
     nop
 show:
     # Submit without libgpu (its queue is not built for pictures fed from
-    # the idle vblank).  Wait for the queue to drain (the sprite setup
-    # queues a CLUT upload) and the GPU to take commands, put buffer 1's
-    # prebuilt DR_ENV packet (DRAWENV+0x1C: draw area, offset, clear) in
-    # front of the ordering table and start DMA channel 2 on it.
+    # the idle vblank).  Let the queue drain (the sprite setup queues a CLUT
+    # upload); give up if the frame is too far gone for the GPU to finish.
     jal   {DRAWSYNC}
     move  $a0, $zero
     lui   $t0, 0x1f80
+    lw    $t1, 0x1110($t0)
+    nop
+    andi  $t1, $t1, 0xffff
+    slti  $t1, $t1, {SUBMIT_LIMIT}
+    beqz  $t1, idle_out
     lui   $t2, 0x0400
 gpu_wait:
     lw    $t1, 0x1814($t0)
@@ -137,7 +192,15 @@ gpu_wait:
     and   $t1, $t1, $t2
     beqz  $t1, gpu_wait
     nop
-    {LA_T3_DRENV}
+    # draw half m = 1 - SHOWN with DB(m)'s prebuilt DR_ENV packet (draw
+    # area, offset, clear) put in front of the ordering table
+    {LA_T7_SHOWN}
+    lw    $t7, 0($t7)
+    {LA_T3_DRENV1}
+    beqz  $t7, have_drenv
+    nop
+    {LA_T3_DRENV0}
+have_drenv:
     lw    $t4, 0($t3)
     lui   $t5, 0xff00
     and   $t4, $t4, $t5
@@ -153,9 +216,31 @@ gpu_wait:
     srl   $t3, $t3, 8
     sw    $t3, 0x10a0($t0)
     sw    $zero, 0x10a4($t0)
+    lw    $t4, 0x10f4($t0)
+    lui   $t5, 0x00fb
+    ori   $t5, $t5, 0xffff
+    and   $t5, $t4, $t5
+    sw    $t5, 0x10f4($t0)
+    lui   $t5, 0x0004
+    and   $t4, $t4, $t5
+    {LA_T5_DSAVE}
+    sw    $t4, 0($t5)
     lui   $t1, 0x0100
     ori   $t1, $t1, 0x0401
     sw    $t1, 0x10a8($t0)
+    xori  $t7, $t7, 1
+    addiu $t7, $t7, 1
+    {LA_T1_MID}
+    sw    $t7, 0($t1)
+    # the idle vblank's own work ran close to the next vblank: a miss
+    lw    $t1, 0x1110($t0)
+    nop
+    andi  $t1, $t1, 0xffff
+    slti  $t1, $t1, {IDLE_LATE}
+    bnez  $t1, idle_out
+    nop
+    jal   blend_fail
+    nop
 idle_out:
     lw    $ra, 16($sp)
     lw    $s0, 20($sp)
@@ -165,22 +250,135 @@ idle_out:
     jr    $ra
     addiu $sp, $sp, 40
 
+# ------------------------------------------- tick vblank, instead of DrawSync(0)
+# An in-between picture still drawing at line WAIT_LIMIT of the tick frame
+# is a miss: the tick waits for it (stopping DMA 2 half way through a list
+# confuses libgpu) and the in-between pictures pause (blend_fail).
+tick_pre:
+    addiu $sp, $sp, -24
+    sw    $ra, 16($sp)
+    jal   settle
+    addiu $a0, $zero, {WAIT_LIMIT}
+    bnez  $v0, tp_sync
+    nop
+    jal   blend_fail
+    nop
+    lui   $a0, 0x7fff
+    jal   settle
+    ori   $a0, $a0, 0xffff
+tp_sync:
+    lw    $ra, 16($sp)
+    addiu $sp, $sp, 24
+    j     {DRAWSYNC}
+    move  $a0, $zero
+
+# Settle the in-between picture in flight (MID = half + 1), if any: wait
+# while it draws until line a0 of the frame (hblanks since the handler
+# started).  Finished: its half is the newest picture, and DMA 2's interrupt
+# goes back to libgpu (masked while ours ran: libgpu takes every DMA 2
+# completion for one of its own queue entries).
+# v0 = 1 when nothing is in flight any more, 0 when it is still drawing.
+settle:
+    {LA_T0_MID}
+    lw    $t1, 0($t0)
+    lui   $t2, 0x1f80
+    beqz  $t1, st_yes
+    lui   $t3, 0x0100
+st_wait:
+    lw    $t4, 0x10a8($t2)
+    lw    $t5, 0x1814($t2)
+    and   $t4, $t4, $t3
+    bnez  $t4, st_busy
+    lui   $t6, 0x0400
+    and   $t5, $t5, $t6
+    bnez  $t5, st_done
+    nop
+st_busy:
+    lw    $t4, 0x1110($t2)
+    nop
+    andi  $t4, $t4, 0xffff
+    slt   $t4, $t4, $a0
+    bnez  $t4, st_wait
+    nop
+    jr    $ra
+    move  $v0, $zero
+st_done:
+    addiu $t1, $t1, -1
+    {LA_T4_NEXT}
+    sw    $t1, 0($t4)
+    sw    $zero, 0($t0)
+    lw    $t4, 0x10f4($t2)
+    {LA_T6_DSAVE}
+    lw    $t6, 0($t6)
+    lui   $t5, 0x00ff
+    ori   $t5, $t5, 0xffff
+    and   $t4, $t4, $t5
+    or    $t4, $t4, $t6
+    lui   $t5, 0x0400
+    or    $t4, $t4, $t5
+    sw    $t4, 0x10f4($t2)
+st_yes:
+    jr    $ra
+    addiu $v0, $zero, 1
+
+# A miss (an in-between picture late for the tick, or an idle vblank whose
+# work ran close to the next vblank): no in-between pictures
+# for COOLDOWN << FAILS ticks, FAILS going up to 5 (2 s, 4 s, ... 32 s) until
+# the next map.  Uses t8/t9 only.
+blend_fail:
+    {LA_T8_FAILS}
+    lw    $t9, 0($t8)
+    nop
+    sltiu $t9, $t9, 5
+    beqz  $t9, bf_cool
+    lw    $t9, 0($t8)
+    nop
+    addiu $t9, $t9, 1
+    sw    $t9, 0($t8)
+bf_cool:
+    lw    $t9, 0($t8)
+    addiu $t8, $zero, {COOLDOWN}
+    sllv  $t9, $t8, $t9
+    {LA_T8_COOL}
+    jr    $ra
+    sw    $t9, 0($t8)
+
 # ----------------------------------------------------- tick vblank environments
-# Field (can_blend): always buffer 0's DISPENV/DRAWENV (draw top, show bottom).
-# Anywhere else: the current buffer's, as the original does.
+# Field: show the newest finished picture (NEXT) and draw the tick picture
+# into the other half; both come from the same buffer struct DB(1-h).
+# Anywhere else: the current buffer's, as the original does (it draws half k
+# of buffer k and shows the other), keeping NEXT/SHOWN in step.
 tick_env:
     addiu $sp, $sp, -24
     sw    $ra, 16($sp)
     sw    $s0, 20($sp)
     jal   blend_ok
     nop
-    bnez  $v0, te_db0
-    lui   $s0, 0x8010
-    b     te_have
-    lw    $s0, -0x6678($s0)
-te_db0:
+    beqz  $v0, te_plain
+    nop
+    {LA_T0_NEXT}
+    lw    $t1, 0($t0)
+    {LA_T2_SHOWN}
+    sw    $t1, 0($t2)
+    {LA_S0_DB1}
+    beqz  $t1, te_have
+    xori  $t3, $t1, 1
     {LA_S0_DB0}
 te_have:
+    b     te_put
+    sw    $t3, 0($t0)
+te_plain:
+    lui   $s0, 0x8010
+    lw    $s0, -0x6678($s0)
+    {LA_T1_DB0}
+    {LA_T0_NEXT}
+    xor   $t2, $s0, $t1
+    sltu  $t2, $zero, $t2
+    sw    $t2, 0($t0)
+    xori  $t2, $t2, 1
+    {LA_T0_SHOWN}
+    sw    $t2, 0($t0)
+te_put:
     jal   {PUTDISP}
     addiu $a0, $s0, 0x5c
     jal   {PUTDRAW}
@@ -267,6 +465,7 @@ bw_out:
     jr    $ra
     nop
 
+@CAVE2
 # draw the in-between picture into buffer s0
 blend_draw:
     addiu $sp, $sp, -24
@@ -399,9 +598,20 @@ save_prev:
     b     sp_store
     nop
 sp_reset:
+    {LA_T2_FAILS}
+    sw    $zero, 0($t2)
+    {LA_T2_COOL}
+    sw    $zero, 0($t2)
     move  $t1, $zero
 sp_store:
     sw    $t1, 0($t0)
+    {LA_T0_COOL}
+    lw    $t1, 0($t0)
+    nop
+    beqz  $t1, sp_cool
+    addiu $t1, $t1, -1
+    sw    $t1, 0($t0)
+sp_cool:
     lw    $ra, 0($sp)
     addiu $sp, $sp, 8
     {LA_T0_LAYERS}
@@ -442,6 +652,7 @@ G1, G2 = 0x800CDD94, 0x800D0030
 BLEND = True       # False: idle vblank draws nothing new (debug)
 SKIP = ()          # debug: drop pieces of the in-between drawing, see SKIPS
 TRACE = False      # debug: counters and progress markers at 0x801E6760..
+LATE = None        # debug: stall the idle vblank until this line before submitting (a slow machine)
 PAD_TO = None      # debug: pad the code with nops up to this many words
 
 NL = chr(10)
@@ -450,7 +661,7 @@ TRACE_COUNT = NL.join(["    lui   $at, 0x801e", "    lw    $v1, {off}($at)", "  
 TRACE_MARK = NL.join(["    lui   $at, 0x801e", "    addiu $v1, $zero, {n}",
                       "    sw    $v1, 0x6760($at)"]) + NL
 TRACE_COUNTERS = (("idle:", 0x6770), ("tick_env:", 0x6774), ("save_prev:", 0x6778), ("blend_draw:", 0x677C))
-TRACE_MARKS_SHOW = (("    lui   $t0, 0x1f80" + NL + "    lui   $t2, 0x0400", 21), ("    {LA_T3_DRENV}", 22),
+TRACE_MARKS_SHOW = (("gpu_wait:", 21), ("have_drenv:", 22),
                     ("    lui   $t1, 0x0400" + NL + "    ori   $t1, $t1, 2", 23))
 TRACE_MARKS = (("    jal   {DRAWSYNC}", 1), ("    jal   blend_draw", 2), ("    # redirect the drawing to buffer s0", 3),
                ("    jal   {CLEAROT}", 4), ("    # objects: +0x1c / +0x20", 5), ("    jal   {MAP_FINISH}", 6),
@@ -475,6 +686,17 @@ SKIPS = {
     "g2": [(_pair("LA_A0_SNAPG2", "LA_A1_G2"), NOP3), (_pair("LA_A0_G2", "LA_A1_SNAPG2"), NOP3)],
     "testjal": [("    # redirect the drawing to buffer s0", "    jal   blend_ok" + NL + "    nop" + NL + "    # redirect the drawing to buffer s0")],
     "hwprobe": [("show:" + NL + "    # Submit", "show:" + NL + "    lui   $t0, 0x1f80" + NL + "    lw    $t1, 0x1814($t0)" + NL + "    lw    $t2, 0x10a8($t0)" + NL + "    lui   $at, 0x801e" + NL + "    sw    $t1, 0x6790($at)" + NL + "    sw    $t2, 0x6794($at)" + NL + "    lw    $t1, 0x10f4($t0)" + NL + "    nop" + NL + "    sw    $t1, 0x6798($at)" + NL + "    # Submit")],
+    # hblanks since the handler started (root counter 1), last and max, at:
+    # 0 tick_env entry (tick waited for the in-between picture), 1 idle after
+    # its first DrawSync, 2 idle end -> 0x801F9F80 + 8n (last, max)
+    "timing": [(needle, repl.replace("@", NL.join([
+        "    lui   $at, 0x1f80", "    lw    $v1, 0x1110($at)", "    lui   $at, 0x8020", "    andi  $v1, $v1, 0xffff",
+        f"    sw    $v1, {-0x6080 + 8 * n}($at)", f"    lw    $t9, {-0x6080 + 8 * n + 4}($at)", "    nop",
+        "    sltu  $t9, $t9, $v1", f"    beqz  $t9, tm_{n}", "    nop", f"    sw    $v1, {-0x6080 + 8 * n + 4}($at)", f"tm_{n}:"])))
+        for n, (needle, repl) in enumerate([
+            ("tick_env:" + NL, "tick_env:" + NL + "@" + NL),
+            ("id_disp:" + NL, "id_disp:" + NL + "@" + NL),
+            ("idle_out:" + NL, "@" + NL + "idle_out:" + NL)])],
     "g1zero": [("    jal   copy" + NL + "    addiu $a2, $zero, 0x18", "    jal   copy" + NL + "    addiu $a2, $zero, 0")],
 }
 
@@ -492,12 +714,18 @@ def source():
             s = s.replace(needle, TRACE_MARK.format(n=n) + needle, 1)
     if not BLEND:
         s = s.replace("    jal   blend_draw", "    nop")
+    if LATE:
+        s = s.replace("show:" + NL, "show:" + NL + NL.join([
+            "    lui   $t0, 0x1f80", "late_wait:", "    lw    $t1, 0x1110($t0)", "    nop", "    andi  $t1, $t1, 0xffff",
+            f"    slti  $t1, $t1, {LATE}", "    bnez  $t1, late_wait", "    nop"]) + NL, 1)
     for key in SKIP:
         for old, new in SKIPS[key]:
             assert old in s, (key, old)
             s = s.replace(old, new)
     subs = {
-        "LA_T1_DB0": la("$t1", DB0), "LA_T3_DRENV": la("$t3", DB1 + 0x1C), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
+        "LA_T1_DB0": la("$t1", DB0), "LA_T3_DB0": la("$t3", DB0), "LA_T3_DB1": la("$t3", DB1),
+        "LA_T3_DRENV0": la("$t3", DB0 + 0x1C), "LA_T3_DRENV1": la("$t3", DB1 + 0x1C),
+        "WAIT_LIMIT": str(WAIT_LIMIT), "SUBMIT_LIMIT": str(SUBMIT_LIMIT), "IDLE_LATE": str(IDLE_LATE), "COOLDOWN": str(COOLDOWN), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
         "LA_A0_DB1D": la("$a0", DB1 + 0x5C), "LA_A0_DB1": la("$a0", DB1),
         "LA_T0_CBS": la("$t0", CBS), "LA_T0_WIN": la("$t0", WINDOWS),
         "LA_T2_CB0": la("$t2", FIELD_CBS[0]), "LA_T2_CB1": la("$t2", FIELD_CBS[1]),
@@ -520,6 +748,9 @@ def source():
         "LAYER_DRAW": hex(LAYER_DRAW), "MAP_FINISH": hex(MAP_FINISH),
         "SPRITES": hex(SPRITES), "JUMP": hex(JUMP),
     }
+    for var, addr in (("NEXT", NEXT), ("SHOWN", SHOWN), ("MID", MID), ("COOL", COOL), ("DSAVE", DSAVE), ("FAILS", FAILS)):
+        for r in range(10):
+            subs[f"LA_T{r}_{var}"] = la(f"$t{r}", addr)
     for k, v in subs.items():
         s = s.replace("{" + k + "}", v)
     assert "{" not in s, s[s.index("{"):s.index("{") + 30]
@@ -527,11 +758,9 @@ def source():
     return "\n".join(line.split("#")[0] for line in s.splitlines())
 
 
-def resolve_calls(src, base):
-    """Replace "jal label" / "j label" with absolute targets.  keystone
-    resolves them nondeterministically (see apply); branches are
-    PC-relative and fine.  Every source line is one instruction (no
-    expanding pseudo-ops), so a label's address is its line count."""
+def label_addrs(src, base):
+    """Every source line is one instruction (no expanding pseudo-ops), so a
+    label's address is its line count.  Returns (labels, instruction count)."""
     labels, n = {}, 0
     for line in src.splitlines():
         t = line.strip()
@@ -539,11 +768,18 @@ def resolve_calls(src, base):
             labels[t[:-1]] = base + 4 * n
         elif t:
             n += 1
+    return labels, n
+
+
+def resolve_calls(src, labels):
+    """Replace "jal label" / "j label" with absolute targets (also across the
+    two caves).  keystone resolves them nondeterministically (see apply);
+    branches are PC-relative and fine."""
     out = []
     for line in src.splitlines():
         m = re.fullmatch(r"\s*(jal|j)\s+([A-Za-z_]\w*)\s*", line)
         out.append(f"    {m.group(1)} {labels[m.group(2)]:#x}" if m else line)
-    return NL.join(out), n
+    return NL.join(out)
 
 
 def check_load_delays(code):
@@ -581,23 +817,29 @@ def apply(exe, base, assemble, branch, BEQ):
         exe[a - base:a - base + len(code)] = code
 
     assert at(CAVE) == assemble("addiu $sp, $sp, -0x188", 0), "0x8009A670 is not the expected dead function"
-    src, words = resolve_calls(source(), CAVE)
-    code = assemble(src, CAVE)
-    assert len(code) == 4 * words, (len(code) // 4, words)
-    # keystone sometimes turns a call to a label into a $gp-relative PIC
-    # call ("lw $t9, 0($gp); jalr $t9"), even for the same source that
-    # assembled fine a moment earlier: refuse that.
-    for i in range(0, len(code), 4):
-        w = struct.unpack_from("<I", code, i)[0]
-        assert ((w >> 21) & 0x1F) != 28 or (w >> 26) not in (0x23, 0x2B), f"$gp access at +{i:#x}: unresolved label?"
-        assert w != 0x0320F809, f"jalr $t9 at +{i:#x}: unresolved label?"
-    check_load_delays(code)
-    if PAD_TO:
-        code += assemble("nop", 0) * (PAD_TO - len(code) // 4)
-    assert len(code) <= (CAVE_WORDS - 1) * 4, len(code) // 4
-    put(CAVE, code)
-    put(STREAK, struct.pack("<I", 0))
-    idle_entry, tick_env, save_prev = CAVE, CAVE + 8, CAVE + 16
+    assert at(CAVE2) == assemble("addiu $sp, $sp, -0x38", 0), "0x800B4954 is not the expected dead function"
+    src_a, src_b = source().split("@CAVE2")
+    labels_a, words_a = label_addrs(src_a, CAVE)
+    labels_b, words_b = label_addrs(src_b, CAVE2)
+    labels = {**labels_a, **labels_b}
+    for src, org, words, limit in ((src_a, CAVE, words_a, CAVE_WORDS - DATA_WORDS), (src_b, CAVE2, words_b, CAVE2_WORDS)):
+        code = assemble(resolve_calls(src, labels), org)
+        assert len(code) == 4 * words, (len(code) // 4, words)
+        # keystone sometimes turns a call to a label into a $gp-relative PIC
+        # call ("lw $t9, 0($gp); jalr $t9"), even for the same source that
+        # assembled fine a moment earlier: refuse that.
+        for i in range(0, len(code), 4):
+            w = struct.unpack_from("<I", code, i)[0]
+            assert ((w >> 21) & 0x1F) != 28 or (w >> 26) not in (0x23, 0x2B), f"$gp access at +{i:#x}: unresolved label?"
+            assert w != 0x0320F809, f"jalr $t9 at +{i:#x}: unresolved label?"
+        check_load_delays(code)
+        if PAD_TO and org == CAVE:
+            code += assemble("nop", 0) * (PAD_TO - len(code) // 4)
+        assert len(code) <= limit * 4, (hex(org), len(code) // 4, limit)
+        put(org, code)
+    for a in (STREAK, SHOWN, NEXT, MID, COOL, DSAVE, FAILS):
+        put(a, struct.pack("<I", 0))
+    idle_entry, tick_env, save_prev, tick_pre = CAVE, CAVE + 8, CAVE + 16, CAVE + 24
 
     # debug load-meter printout -> skipped; its space holds the trampoline
     assert at(0x80011648) == jal(0x80079DC0)
@@ -610,11 +852,15 @@ def apply(exe, base, assemble, branch, BEQ):
     assert at(0x80011640) == branch(BEQ, 8, 0x80011640, 0x8001171C)
     put(0x80011640, branch(BEQ, 8, 0x80011640, TRAMP))
 
-    # tick vblank: environments chosen by tick_env (field: buffer 0 always)
+    # tick vblank: DrawSync(0) -> tick_pre (bounded wait for the in-between picture)
+    assert at(0x800116C4) == jal(DRAWSYNC)
+    put(0x800116C4, jal(tick_pre))
+
+    # tick vblank: environments chosen by tick_env
     assert at(0x800116EC) == jal(PUTDISP) and at(0x800116FC) == jal(PUTDRAW)
     put(0x800116E4, jal(tick_env) + assemble("nop", 0) * 7)
 
     # tick vblank: save the previous positions just before the callbacks
     assert at(0x8001175C) == jal(DISPATCH)
     put(0x8001175C, jal(save_prev))
-    return len(code) // 4
+    return words_a + words_b
