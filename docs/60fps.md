@@ -43,6 +43,21 @@ Measured in Beetle with the game's meter, walking and running in town:
 A whole field update fits in one frame (50–70 %), so the CPU could run it
 every vblank. GPU time is not measured yet.
 
+## GPU budget
+
+`debug/gpu_time_build.py` + `gpu_time_log.py`: a test disc that stores
+GPUSTAT and DMA2 CHCR at the start of every vblank. In Beetle, walking and
+running in Marion town, the GPU was ready for commands and DMA2 idle at the
+start of all 300 vblanks sampled, including the one right after each picture
+was submitted: one picture draws in under a frame.
+
+Waiting on the GPU from inside the vblank handler does not work (DrawSync
+or polling GPUSTAT/CHCR hangs after the first picture): the draw queue
+advances in interrupt callbacks. Measure passively.
+
+Still to check: heavier scenes (world map, big towns), and real hardware
+(MiSTer core GPU timing).
+
 ## Options
 
 1. **Run the callbacks every vblank** (drop the parity gate on the field) and
@@ -100,6 +115,8 @@ executable has no free space; a code cave has to come from compacting
 existing routines or from unused RAM loaded by an overlay).
 
 Next steps: identify `0x80047684`; list every state write inside the six
-layer renderers and `0x80088D7C`; measure GPU time per picture (DrawSync
-wait); find room for the in-between-frame code; prototype with the camera
-only (map layers at the interpolated camera, sprites unchanged).
+layer renderers and `0x80088D7C`; find room for the in-between-frame code
+(RAM that stays zero on the field: `0x800D5C00`-`0x800D9C00` (16 KB),
+`0x801E4800`-`0x801E9800`, `0x801F7800`-`0x801FC000` — to be checked in
+battles and menus); prototype with the camera only (map layers at the
+interpolated camera, sprites unchanged).
