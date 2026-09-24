@@ -10,6 +10,15 @@ on the original release.
 
 ## Features
 
+- **60 fps on the field:** the game updates at 30 Hz. On plain field maps
+  (towns and dungeons), the patch draws an extra picture on the frame the game leaves idle,
+  with the camera and every character halfway between two updates, so
+  walking and scrolling move every frame. Game logic and timing are
+  untouched. It switches itself off wherever it can't match the game's
+  picture exactly: the world map, fades, menus and message windows, puzzle
+  rooms with their own drawing code, and any moment the console runs late.
+  Those parts look exactly like the original. `--no-smooth` builds without it.
+  Details: [docs/60fps.md](docs/60fps.md).
 - **Modern confirm/cancel layout:** ✕ and △ are swapped everywhere (field,
   menus and battle).
 - **Run button:** hold ○ on the field or world map to move at 2× speed.
@@ -72,6 +81,7 @@ You need:
 chdman extractcd -i "Beyond the Beyond (USA).chd" -o original.cue -ob original.bin
 python build_patch.py original.bin modern.bin                          # defaults
 python build_patch.py original.bin modern.bin --run 1.5x --exp 2 --gold 1
+python build_patch.py original.bin modern.bin --no-smooth               # 30 fps like the original
 # write a cue for modern.bin, then:
 chdman createcd -i modern.cue -o "Beyond the Beyond (USA).chd"
 ```
@@ -143,6 +153,10 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 
 ## Known limits
 
+- 60 fps: in heavy scenes the game's own update sometimes runs past a
+  frame, so that in-between picture is skipped and shows as a small hitch.
+  The original has the same overruns, but at 30 fps they don't show. The
+  world map (a different map renderer) stays at 30 fps.
 - NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.

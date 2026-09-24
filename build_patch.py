@@ -1,6 +1,7 @@
 """Beyond the Beyond (USA) SCUS_947.02 modernization patch.
 
     python build_patch.py <in.bin> <out.bin> [--run 2x|1.5x] [--exp N] [--gold N]
+                          [--no-smooth] [--no-save-anywhere] [--no-options]
 
 Input is a MODE2/2352 .bin of the original Beyond the Beyond (USA), CRC32
 453917AF.  Inspired by "Beyond the Beyond - Reunion" by Skiller and
@@ -58,6 +59,9 @@ Changes, all in SCUS_947.02 except where noted:
    settings word (saved with the game; 0 = as built).  The encounter check,
    the three reward blocks and the three gold sites call small gates that
    read those bits (see OPTIONS_CODE).  --no-options leaves them fixed.
+
+10. 60 Hz on the field: an in-between picture on the vblank the game
+    leaves idle (interp60.py, docs/60fps.md).  --no-smooth leaves it out.
 """
 import struct
 import sys
@@ -266,7 +270,7 @@ EXP_MULT = "2.5"
 GOLD_SITES = [0x80042430, 0x800424C8, 0x80042560]
 GOLD_PRESETS = {"1": "nop", "2": "sll $v0, $v0, 1", "4": "sll $v0, $v0, 2"}
 GOLD_MULT = "2"
-SMOOTH = False
+SMOOTH = True
 
 # --- 5. Rebalance: random encounters with a grace period ---
 # The earlier patch replaced the per-step roll at 0x8006E040 with "battle
@@ -947,11 +951,11 @@ if __name__ == "__main__":
     ap.add_argument("--run", choices=sorted(RUN_PRESETS), default=RUN_SPEED)
     ap.add_argument("--exp", choices=sorted(EXP_PRESETS, key=float), default=EXP_MULT)
     ap.add_argument("--gold", choices=sorted(GOLD_PRESETS, key=float), default=GOLD_MULT)
-    ap.add_argument("--smooth", action="store_true", help="60 Hz presentation (experimental)")
+    ap.add_argument("--no-smooth", action="store_true", help="no 60 Hz presentation on the field")
     ap.add_argument("--no-save-anywhere", action="store_true", help="no Save in the field menu / SELECT save")
     ap.add_argument("--no-options", action="store_true", help="no Setting > Extras switches (features always on)")
     args = ap.parse_args()
-    RUN_SPEED, EXP_MULT, GOLD_MULT, SMOOTH = args.run, args.exp, args.gold, args.smooth
+    RUN_SPEED, EXP_MULT, GOLD_MULT, SMOOTH = args.run, args.exp, args.gold, not args.no_smooth
     SAVE_ANYWHERE = not args.no_save_anywhere
     OPTIONS = not args.no_options
     print(f"run speed: {RUN_SPEED}")
