@@ -234,6 +234,29 @@ every other frame showed the unfaded scene.
 - `work/roundtrip.py` (church → world map → town) gives a per-frame
   brightness sequence identical to vanilla.
 
+### Real-hardware numbers (MiSTer stats build, a few minutes of play)
+
+`debug/mister_stats.py` on a MiSTer savestate (main RAM at file offset
+0x200000; VRAM is at offset 0x100000, 1024×512 15-bit, handy for seeing
+both halves of the screen):
+
+- In-between pictures were submitted at lines 112–175. 419 of 420 finished
+  before the tick, and there was 1 miss. The MiSTer keeps up as well as
+  Beetle.
+- 474 ticks blended, but only 427 idle vblanks ran (420 drew, 7 skipped).
+  About 10 % of the time the game's own tick overran past the idle vblank.
+  The parity flips per vblank, so the next handler call was another tick:
+  no in-between picture that time, a visible hitch. That's the game's CPU
+  load, not ours; our tick work is a few lines.
+- A sliding-tile puzzle room enables a 4th callback (`0x80138AA0`) that
+  draws the pieces. The in-between picture lacked them, so the board
+  flickered (the VRAM dump showed both halves). `can_blend` now also
+  requires callback slots 3–15 to be disabled (enable bytes
+  `0x800DB523..0x800DB52F`).
+- Matching primitive counts between the tick and in-between pictures is
+  not a usable general guard: 9 % differ by a few either way in plain town
+  walking (visible tiles and sprites change with the sub-tile scroll).
+
 ### Bugs found on the way (worth remembering)
 
 - **Load delay slot.** `lw $ra, 16($sp)` directly followed by `jr $ra`
