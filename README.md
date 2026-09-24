@@ -26,6 +26,11 @@ on the original release.
   "Everyone's HP Heal") say HP.
 - **Reward multipliers:** EXP ×2.5 and gold ×2 by default. Both can be
   changed at build time (`--exp 1|1.5|2|2.5|3|4`, `--gold 1|2|4`).
+- **Save anywhere:** press SELECT on the field or world map to record your
+  journey without a church. It uses the church's own save screen (slot
+  choice, overwrite prompt), and loading resumes where you saved. SELECT
+  does nothing during events, just like talking and the menu.
+  `--no-save-anywhere` turns it off.
 - **Random encounters:** the original per-step roll against each area's rate
   stays, plus a 25-step grace period after every fight, so there are no
   back-to-back battles. On average there is a fight every ~36–50
@@ -84,6 +89,9 @@ docstring at the top of `build_patch.py` for each change.
 | Field object physics loop | `0x800894CC` |
 | Object script opcode table (`0x25` = follow) | `0x800CE050` |
 | Random encounter check | `0x8006DCA0` (roll at `0x8006E040`) |
+| Church service / "record your journey" save routine | `0x800685F0` / `0x8006877C` |
+| Field loop button flags (SELECT = `0x800FE6F3`, unused in the original) | `0x8008E360` |
+| Halt player / give control back (object script `0x800CDDE8` / `0x800CDE3C`) | `0x8008D6D8`+`0x800866B4` / `0x800877DC` |
 | Enemy-defeat rewards (one per death animation) | `0x800423F8`, `0x80042490`, `0x80042528` |
 | Battle EXP / gold totals | `0x800F9B08` / `0x800F9B0C` |
 | Battle actors (`0x48` bytes each: x/y/z, velocity at `+8`, state `+0x14`, counter `+0x16`) | `0x800F9B20` |
