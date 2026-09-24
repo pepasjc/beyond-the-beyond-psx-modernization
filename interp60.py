@@ -563,7 +563,8 @@ sp_objs:
 
 
 @CAVE2
-# v0 = 1 when the field callbacks are the active set, no window is open, the
+# v0 = 1 when the field callbacks are the active set (and nothing else), no
+# window is open, the
 # map is drawn by the town layer renderer only and no fade/tint is on
 can_blend:
     lui   $t0, 0x800d
@@ -583,6 +584,17 @@ can_blend:
     lw    $t1, 8($t0)
     {LA_T2_CB2}
     bne   $t1, $t2, cb_no
+    nop
+    # and no other callback enabled (a puzzle room adds its own drawing
+    # routine, e.g. 0x80138AA0, which the in-between picture would lack)
+    {LA_T0_CBEN3}
+    addiu $t3, $t0, 13
+cbe_loop:
+    lbu   $t1, 0($t0)
+    addiu $t0, $t0, 1
+    bnez  $t1, cb_no
+    nop
+    bne   $t0, $t3, cbe_loop
     nop
     {LA_T0_WIN}
     addiu $t3, $t0, 0xc0
@@ -749,6 +761,15 @@ draw_layers:
     nop
     jal   {SPRITES}
     nop
+    # the in-between picture must have as many primitives as the tick's
+    # (packet count 0x800F998C; s3 = the tick picture's): anything more in
+    # the tick picture is an effect or overlay drawn outside the map layers
+    # and sprites, and without it the in-between picture flickers
+    lui   $at, 0x8010
+    lw    $t0, -0x6674($at)
+    lui   $at, 0x8020
+    sw    $t0, {STATS_LO_12}($at)
+    sw    $s3, {STATS_LO_13}($at)
     # put everything back
     lui   $at, 0x8010
     sw    $s2, -0x6678($at)
@@ -862,12 +883,12 @@ def source():
     subs = {
         "LA_T1_DB0": la("$t1", DB0), "LA_T3_DB0": la("$t3", DB0), "LA_T3_DB1": la("$t3", DB1),
         "LA_T3_DRENV0": la("$t3", DB0 + 0x1C), "LA_T3_DRENV1": la("$t3", DB1 + 0x1C),
-        "STATS_LO": str(STATS_LO), "STATS_MAGIC_LO": str(STATS_LO + 4 * STAT_MAGIC),
+        "STATS_LO": str(STATS_LO), "STATS_LO_12": str(STATS_LO + 48), "STATS_LO_13": str(STATS_LO + 52), "STATS_MAGIC_LO": str(STATS_LO + 4 * STAT_MAGIC),
         "STATS_LASTV_LO": str(STATS_LO + 4 * STAT_LASTV), "MAGIC_HI": hex(STAT_MAGIC_VALUE >> 16),
         "MAGIC_LO": hex(STAT_MAGIC_VALUE & 0xFFFF), "STAT_HIST_DONE": str(STAT_HIST_DONE),
         "STAT_HIST_SUBMIT": str(STAT_HIST_SUBMIT), "WAIT_LIMIT": str(WAIT_LIMIT), "SUBMIT_LIMIT": str(SUBMIT_LIMIT), "IDLE_LATE": str(IDLE_LATE), "COOLDOWN": str(COOLDOWN), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
         "LA_A0_DB1D": la("$a0", DB1 + 0x5C), "LA_A0_DB1": la("$a0", DB1), "LA_A0_DB0": la("$a0", DB0),
-        "LA_T0_CBS": la("$t0", CBS), "LA_T0_WIN": la("$t0", WINDOWS),
+        "LA_T0_CBS": la("$t0", CBS), "LA_T0_CBEN3": la("$t0", CBS + 0x43), "LA_T0_WIN": la("$t0", WINDOWS),
         "LA_T2_CB0": la("$t2", FIELD_CBS[0]), "LA_T2_CB1": la("$t2", FIELD_CBS[1]),
         "LA_T2_CB2": la("$t2", FIELD_CBS[2]),
         "LA_A0_SNAPO": la("$a0", SNAP_OBJS), "LA_A1_SNAPO": la("$a1", SNAP_OBJS),
