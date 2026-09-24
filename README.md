@@ -10,6 +10,15 @@ on the original release.
 
 ## Features
 
+- **60 fps on the field:** the game updates at 30 Hz. On plain field maps
+  (towns and dungeons), the patch draws an extra picture on the frame the game leaves idle,
+  with the camera and every character halfway between two updates, so
+  walking and scrolling move every frame. Game logic and timing are
+  untouched. It switches itself off wherever it can't match the game's
+  picture exactly: the world map, fades, menus and message windows, puzzle
+  rooms with their own drawing code, and any moment the console runs late.
+  Those parts look exactly like the original. `--no-smooth` builds without it.
+  Details: [docs/60fps.md](docs/60fps.md).
 - **Modern confirm/cancel layout:** ✕ and △ are swapped everywhere (field,
   menus and battle).
 - **Run button:** hold ○ on the field or world map to move at 2× speed.
@@ -26,6 +35,20 @@ on the original release.
   "Everyone's HP Heal") say HP.
 - **Reward multipliers:** EXP ×2.5 and gold ×2 by default. Both can be
   changed at build time (`--exp 1|1.5|2|2.5|3|4`, `--gold 1|2|4`).
+- **Save anywhere:** the field menu has a sixth item, **Save**, below
+  Prepare (SELECT on the field is a shortcut). It uses the church's own save
+  screen (slot choice, overwrite prompt), and loading resumes where you
+  saved, including the world map. It works whenever the menu does, so never
+  during events. `--no-save-anywhere` turns it off.
+- **Extras menu:** Prepare → Setting → **Extras** switches the patch's
+  gameplay changes in-game, saved with your journey:
+  - **Battles:** Off, 50%, 100% or 200%. 100% is this patch's rate (the
+    area's roll plus a 25-step grace), 200% is the original game (no grace),
+    and 50% doubles the grace and halves the roll.
+  - **EXP Boost** and **Gold Boost:** On/Off.
+
+  Everything starts on 100% / On, also for older saves. `--no-options`
+  builds without the menu, with the features always on.
 - **Random encounters:** the original per-step roll against each area's rate
   stays, plus a 25-step grace period after every fight, so there are no
   back-to-back battles. On average there is a fight every ~36–50
@@ -58,6 +81,7 @@ You need:
 chdman extractcd -i "Beyond the Beyond (USA).chd" -o original.cue -ob original.bin
 python build_patch.py original.bin modern.bin                          # defaults
 python build_patch.py original.bin modern.bin --run 1.5x --exp 2 --gold 1
+python build_patch.py original.bin modern.bin --no-smooth               # 30 fps like the original
 # write a cue for modern.bin, then:
 chdman createcd -i modern.cue -o "Beyond the Beyond (USA).chd"
 ```
@@ -84,6 +108,13 @@ docstring at the top of `build_patch.py` for each change.
 | Field object physics loop | `0x800894CC` |
 | Object script opcode table (`0x25` = follow) | `0x800CE050` |
 | Random encounter check | `0x8006DCA0` (roll at `0x8006E040`) |
+| Church service / "record your journey" save routine | `0x800685F0` / `0x8006877C` |
+| Field loop button flags (SELECT = `0x800FE6F3`, unused in the original) | `0x8008E360` |
+| Field menu (window + items / choice and dispatch table `0x800C66B0`) | `0x80053360` / `0x8004F3D0` |
+| Settings word (text speed etc., saved with the game; Extras use `0x80103879` bits 5–7 and `0x8010387B` bit 7) | `0x80103878` |
+| Setting submenu (window / controller) | `0x800586F0` / `0x80051D5C` |
+| UI window handle table (slot = index; Extras use unused slot 18) | `0x800CBB40` |
+| Halt player / give control back (object script `0x800CDDE8` / `0x800CDE3C`) | `0x8008D6D8`+`0x800866B4` / `0x800877DC` |
 | Enemy-defeat rewards (one per death animation) | `0x800423F8`, `0x80042490`, `0x80042528` |
 | Battle EXP / gold totals | `0x800F9B08` / `0x800F9B0C` |
 | Battle actors (`0x48` bytes each: x/y/z, velocity at `+8`, state `+0x14`, counter `+0x16`) | `0x800F9B20` |
@@ -122,6 +153,10 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 
 ## Known limits
 
+- 60 fps: in heavy scenes the game's own update sometimes runs past a
+  frame, so that in-between picture is skipped and shows as a small hitch.
+  The original has the same overruns, but at 30 fps they don't show. The
+  world map (a different map renderer) stays at 30 fps.
 - NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.
