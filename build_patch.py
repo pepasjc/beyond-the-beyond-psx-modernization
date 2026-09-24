@@ -45,10 +45,13 @@ Changes, all in SCUS_947.02 except where noted:
 7. Curse flag as in the original game (undoes Reunion's change at
    0x80073B80, which also clobbered the last byte of character names).
 
-8. Save anywhere: SELECT on the field (unused in the original) halts the
-   player like the field menu does, runs the church's "record your journey"
-   routine from its Yes/No question on, then closes the message window and
-   gives control back (see SAVE_WRAPPER).  --no-save-anywhere turns it off.
+8. Save anywhere: a sixth field-menu item "Save" (window 2 rows taller;
+   the chooser counts items from the height; a choice past the dispatch
+   table lands in our handler) and SELECT on the field (unused in the
+   original) run the church's "record your journey" routine from its
+   Yes/No question on, then close the message window (see SAVE_CODE).
+   SELECT also halts the player like the menu does and gives control back.
+   --no-save-anywhere turns it off.
 """
 import struct
 import sys
@@ -368,12 +371,17 @@ SAVE_ANYWHERE = True
 SAVE_ROUTINE = 0x8006877C           # "record your journey": slot choice, confirm, card write
 SAVE_CAVE = 0x8003BF58              # dead function (nothing on the disc calls it), 176 words
 SELECT_HOOK = 0x8008F234            # field loop: "sb $zero, SELECT flag", runs only when SELECT was pressed
-SAVE_WRAPPER = f"""
+MENU_WINDOW_H = 0x80053390         # field menu window: "addiu $a3, $zero, 11" (height: 5 items)
+MENU_PREPARE_ITEM = 0x8005345C     # field menu: "jal 0x80047330" writing "Prepare" on row 8
+MENU_RANGE_CHECK = 0x8004F4BC      # field menu dispatch: "beqz $at, 0x8004F568" (choice past the table)
+MENU_LOOP_END = 0x8004F568
+SAVE_CODE = f"""
+# SELECT on the field: halt the player the way the field menu does (halt
+# script 0x800CDDE8, then let it reach its wait op), or the d-pad walks him
+# around behind the save screen; save; give control back
+select:
     addiu $sp, $sp, -24
     sw    $ra, 16($sp)
-    # halt the player the way the field menu does (halt script 0x800CDDE8,
-    # then let it reach its wait op), or the d-pad walks him around behind
-    # the save screen
     lui   $a0, 0x800d
     lh    $a0, -0x2248($a0)
     lui   $a1, 0x800d
@@ -384,14 +392,8 @@ SAVE_WRAPPER = f"""
     nop
     jal   0x800866b4
     nop
-    jal   ENTRY
+    jal   core
     nop
-    # as the church does: message 0 closes the message window, the
-    # text-sound flag 0x800CC214 goes back to 0; then player control back on
-    jal   0x80069e10
-    move  $a0, $zero
-    lui   $at, 0x800d
-    sh    $zero, -0x3dec($at)
     lui   $a0, 0x800d
     lh    $a0, -0x2248($a0)
     nop
@@ -405,10 +407,56 @@ SAVE_WRAPPER = f"""
     lui   $t8, 0x8010
     jr    $ra
     addiu $sp, $sp, 24
-    # the save routine's own prologue, then into it after its first line
-    # (the priest's "Let me find my Book of Journeys!"): it asks "Do you wish
-    # for me to inscribe your adventure?" (Yes/No) and goes on as in a church
-ENTRY:
+# the save itself, then as the church does: message 0 closes the message
+# window, the text-sound flag 0x800CC214 goes back to 0
+core:
+    addiu $sp, $sp, -24
+    sw    $ra, 16($sp)
+    jal   entry
+    nop
+    jal   0x80069e10
+    move  $a0, $zero
+    lui   $at, 0x800d
+    sh    $zero, -0x3dec($at)
+    lw    $ra, 16($sp)
+    nop
+    jr    $ra
+    addiu $sp, $sp, 24
+# field menu: a choice past the jump table lands here ($s2 = choice).
+# "Save" (5): save, then leave the menu with nothing for the field loop to do
+menu:
+    addiu $at, $zero, 5
+    bne   $s2, $at, menu_out
+    nop
+    jal   core
+    nop
+    move  $s0, $zero
+    move  $s4, $zero
+menu_out:
+    j     {MENU_LOOP_END:#x}
+    nop
+# in place of the menu's "Prepare" line: write it, then "Save" on row 10
+items:
+    addiu $sp, $sp, -32
+    sw    $ra, 24($sp)
+    sw    $a0, 28($sp)
+    jal   0x80047330
+    sw    $zero, 16($sp)
+    lw    $a0, 28($sp)
+    addiu $a1, $zero, 1
+    addiu $a2, $zero, 10
+    lui   $a3, STR_HI
+    addiu $a3, $a3, STR_LO
+    jal   0x80047330
+    sw    $zero, 16($sp)
+    lw    $ra, 24($sp)
+    nop
+    jr    $ra
+    addiu $sp, $sp, 32
+# the save routine's own prologue, then into it after its first line (the
+# priest's "Let me find my Book of Journeys!"): it asks "Do you wish for me
+# to inscribe your adventure?" (Yes/No) and goes on as in a church
+entry:
     addiu $sp, $sp, -0x188
     sw    $ra, 0x1c($sp)
     addiu $t6, $zero, 1
@@ -420,8 +468,36 @@ ENTRY:
     j     {SAVE_ROUTINE + 0x28:#x}
     nop
 """
-# (the hook replaces the flag clear; its delay slot "lw $t7" runs before the
-# call, so the wrapper reloads $t7 and $t8, which the field loop uses next)
+SAVE_ITEM_TEXT = b"Save" + bytes(4)   # NUL-terminated, word-aligned
+
+
+def hi_lo(addr):
+    lo = addr & 0xFFFF
+    if lo >= 0x8000:
+        lo -= 0x10000
+    return (addr - lo) >> 16, lo
+
+
+def assemble_labeled(src, addr):
+    """Assemble src at addr; "jal/j label" get absolute targets first (keystone
+    resolves those unreliably), branches keep their labels.  Returns
+    (code, labels)."""
+    import re
+    lines = [l.split("#")[0].rstrip() for l in src.splitlines()]
+    lines = [l for l in lines if l.strip()]
+    labels, n = {}, 0
+    for l in lines:
+        if l.strip().endswith(":"):
+            labels[l.strip()[:-1]] = addr + 4 * n
+        else:
+            n += 1
+    out = []
+    for l in lines:
+        m = re.fullmatch(r"\s*(jal|j)\s+([A-Za-z_]\w*)\s*", l)
+        out.append(f"    {m.group(1)} {labels[m.group(2)]:#x}" if m else l)
+    code = assemble(chr(10).join(out), addr)
+    assert len(code) == 4 * n, (len(code) // 4, n)
+    return code, labels
 
 
 def main(src_bin, out_bin):
@@ -510,23 +586,33 @@ def main(src_bin, out_bin):
     assert exe[o:o + 4] == vanilla_store
 
     if SAVE_ANYWHERE:
-        # SELECT on the field (pressed-flag 0x800FE6F3, set and cleared by
-        # the field loop but otherwise unused) opens the church's "record
-        # your journey" routine.  The field loop runs on the main thread,
+        # Save anywhere: a "Save" item in the field menu, and SELECT on the
+        # field (its pressed-flag 0x800FE6F3 is set and cleared by the field
+        # loop but otherwise unused).  Both run the church's "record your
+        # journey" routine; the field loop and menu run on the main thread,
         # where the blocking save screen is safe.
         o = SAVE_CAVE - base
         assert exe[o:o + 4] == assemble("addiu $sp, $sp, -0x48", 0), "0x8003BF58 is not the expected dead function"
-        lines = [l.split("#")[0].strip() for l in SAVE_WRAPPER.splitlines()]
-        lines = [l for l in lines if l]
-        entry = SAVE_CAVE + 4 * lines.index("ENTRY:")
-        src = chr(10).join(l for l in lines if l != "ENTRY:").replace("jal   ENTRY", f"jal   {entry:#x}")
-        code = assemble(src, SAVE_CAVE)
-        assert len(code) == 4 * (len(lines) - 1)
+        n_words = len([l for l in SAVE_CODE.splitlines() if l.split("#")[0].strip() and not l.strip().endswith(":")])
+        text_at = SAVE_CAVE + 4 * n_words
+        src = SAVE_CODE.replace("STR_HI", hex(hi_lo(text_at)[0])).replace("STR_LO", str(hi_lo(text_at)[1]))
+        code, labels = assemble_labeled(src, SAVE_CAVE)
+        code += SAVE_ITEM_TEXT
+        assert len(code) <= 176 * 4
         exe[o:o + len(code)] = code
         o = SELECT_HOOK - base
         assert exe[o:o + 8] == assemble("sb $zero, -0x190d($at)" + chr(10) + "lw $t7, -0x6f44($t7)", 0)
-        exe[o:o + 4] = struct.pack("<I", (3 << 26) | (SAVE_CAVE >> 2 & 0x3FFFFFF))
-        print(f"save anywhere: SELECT on the field ({len(code) // 4} words at {hex(SAVE_CAVE)})")
+        exe[o:o + 4] = struct.pack("<I", (3 << 26) | (labels["select"] >> 2 & 0x3FFFFFF))
+        o = MENU_WINDOW_H - base
+        assert exe[o:o + 4] == assemble("addiu $a3, $zero, 0xb", 0)
+        exe[o:o + 4] = assemble("addiu $a3, $zero, 0xd", 0)
+        o = MENU_PREPARE_ITEM - base
+        assert exe[o:o + 4] == struct.pack("<I", (3 << 26) | (0x80047330 >> 2 & 0x3FFFFFF))
+        exe[o:o + 4] = struct.pack("<I", (3 << 26) | (labels["items"] >> 2 & 0x3FFFFFF))
+        o = MENU_RANGE_CHECK - base
+        assert exe[o:o + 4] == branch(BEQ, AT_REG, MENU_RANGE_CHECK, MENU_LOOP_END)
+        exe[o:o + 4] = branch(BEQ, AT_REG, MENU_RANGE_CHECK, labels["menu"])
+        print(f"save anywhere: field menu \"Save\" and SELECT ({len(code) // 4} words at {hex(SAVE_CAVE)})")
 
     if SMOOTH:
         import interp60
