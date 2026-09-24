@@ -31,6 +31,15 @@ on the original release.
   screen (slot choice, overwrite prompt), and loading resumes where you
   saved, including the world map. It works whenever the menu does, so never
   during events. `--no-save-anywhere` turns it off.
+- **Extras menu:** Prepare → Setting → **Extras** switches the patch's
+  gameplay changes in-game, saved with your journey:
+  - **Battles:** Off, 50%, 100% or 200%. 100% is this patch's rate (the
+    area's roll plus a 25-step grace), 200% is the original game (no grace),
+    and 50% doubles the grace and halves the roll.
+  - **EXP Boost** and **Gold Boost:** On/Off.
+
+  Everything starts on 100% / On, also for older saves. `--no-options`
+  builds without the menu, with the features always on.
 - **Random encounters:** the original per-step roll against each area's rate
   stays, plus a 25-step grace period after every fight, so there are no
   back-to-back battles. On average there is a fight every ~36–50
@@ -92,6 +101,9 @@ docstring at the top of `build_patch.py` for each change.
 | Church service / "record your journey" save routine | `0x800685F0` / `0x8006877C` |
 | Field loop button flags (SELECT = `0x800FE6F3`, unused in the original) | `0x8008E360` |
 | Field menu (window + items / choice and dispatch table `0x800C66B0`) | `0x80053360` / `0x8004F3D0` |
+| Settings word (text speed etc., saved with the game; Extras use `0x80103879` bits 5–7 and `0x8010387B` bit 7) | `0x80103878` |
+| Setting submenu (window / controller) | `0x800586F0` / `0x80051D5C` |
+| UI window handle table (slot = index; Extras use unused slot 18) | `0x800CBB40` |
 | Halt player / give control back (object script `0x800CDDE8` / `0x800CDE3C`) | `0x8008D6D8`+`0x800866B4` / `0x800877DC` |
 | Enemy-defeat rewards (one per death animation) | `0x800423F8`, `0x80042490`, `0x80042528` |
 | Battle EXP / gold totals | `0x800F9B08` / `0x800F9B0C` |
