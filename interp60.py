@@ -44,7 +44,7 @@ FIELD_CBS = (0x80085EFC, 0x80086550, 0x80047684)
 CAVE = 0x8009A670                           # dead function, 476 words
 CAVE_WORDS = 476
 CAVE2 = 0x800B4954                          # second dead function, 251 words:
-CAVE2_WORDS = 251                           # blend_draw, save_prev
+CAVE2_WORDS = 251                           # can_blend .. save_prev
 TRAMP = 0x80011650
 
 # Scratch RAM: 0x801F7800..0x801FC000 is never written by the game (random
@@ -60,7 +60,17 @@ SNAP_LAYERS = SCRATCH + 0x1E20              # 0xF0
 SNAP_G1 = SCRATCH + 0x1F10                  # 0x800CDD94, 0x18
 SNAP_G2 = SCRATCH + 0x1F30                  # 0x800D0030, 0x1C
 SNAP_CNT = SCRATCH + 0x1F50                 # 0x800CE040
-assert SNAP_CNT + 4 <= 0x801FA000
+# statistics for tuning on real hardware, read back from a MiSTer savestate
+# (debug/mister_stats.py): 64 words, see STAT_NAMES
+STATS = SCRATCH + 0x1F80
+STATS_LO = STATS - 0x80200000               # offset from lui 0x8020
+STAT_LASTV, STAT_MAGIC, STAT_MAGIC_VALUE = 14, 15, 0x6F707331
+STAT_NAMES = {0: "ticks blending", 1: "in-between pictures submitted", 2: "finished before the tick",
+              3: "late at the tick (miss)", 4: "idle skipped: GPU still busy", 5: "idle skipped: too late to submit",
+              6: "idle work ran late (miss)", 7: "idle skipped: cooldown or conditions",
+              8: "vblanks lost while blending", 9: "ticks in cooldown"}
+STAT_HIST_DONE, STAT_HIST_SUBMIT = 16, 32   # 16 buckets each
+assert STATS + 0x100 <= 0x801FA800
 JUMP = 0x1800                               # one tile: larger moves are not blended
 # consecutive ticks of plain field play: the cave's last word, so nothing but
 # this code can ever write it
@@ -122,20 +132,20 @@ idle:
     move  $a0, $zero
     jal   settle
     move  $a1, $zero
-    beqz  $v0, idle_out
+    beqz  $v0, id_busy
     lui   $t0, 0x800d
     lw    $t1, -0xdc0($t0)
     lw    $t2, -0xdbc($t0)
     lui   $t3, 0x1f80
-    bne   $t1, $t2, idle_out
+    bne   $t1, $t2, id_busy
     lw    $t4, 0x10a8($t3)
     lui   $t5, 0x0100
     and   $t4, $t4, $t5
-    bnez  $t4, idle_out
+    bnez  $t4, id_busy
     lw    $t4, 0x1814($t3)
     lui   $t5, 0x0400
     and   $t4, $t4, $t5
-    beqz  $t4, idle_out
+    beqz  $t4, id_busy
     nop
     # show half h = NEXT through DB(1-h)'s DISPENV (GP1 05, display start)
     {LA_T0_NEXT}
@@ -157,12 +167,12 @@ id_disp:
     sw    $t6, 0x1814($t0)
     jal   can_blend
     nop
-    beqz  $v0, idle_out
+    beqz  $v0, id_cool
     nop
     {LA_T0_COOL}
     lw    $t1, 0($t0)
     nop
-    bnez  $t1, idle_out
+    bnez  $t1, id_cool
     # OT and packets: the buffer the tick picture came from (finished)
     lui   $s0, 0x8010
     lw    $s0, -0x6678($s0)
@@ -187,7 +197,7 @@ show:
     nop
     andi  $t1, $t1, 0xffff
     slti  $t1, $t1, {SUBMIT_LIMIT}
-    beqz  $t1, idle_out
+    beqz  $t1, id_nosubmit
     nop
     # draw half m = 1 - SHOWN with DB(m)'s DRAWENV
     {LA_T7_SHOWN}
@@ -204,6 +214,11 @@ have_denv:
     addiu $s1, $s1, 1
     {LA_T1_MID}
     sw    $s1, 0($t1)
+    jal   stat
+    addiu $a0, $zero, 1
+    addiu $a0, $zero, {STAT_HIST_SUBMIT}
+    jal   stat_line
+    addiu $a2, $zero, 4
     # the idle vblank's own work ran close to the next vblank: a miss
     lui   $t0, 0x1f80
     lw    $t1, 0x1110($t0)
@@ -213,6 +228,19 @@ have_denv:
     bnez  $t1, idle_out
     nop
     jal   blend_fail
+    nop
+    b     idle_stat
+    addiu $a0, $zero, 6
+id_busy:
+    b     idle_stat
+    addiu $a0, $zero, 4
+id_cool:
+    b     idle_stat
+    addiu $a0, $zero, 7
+id_nosubmit:
+    addiu $a0, $zero, 5
+idle_stat:
+    jal   stat
     nop
 idle_out:
     lw    $ra, 16($sp)
@@ -230,15 +258,34 @@ idle_out:
 tick_pre:
     addiu $sp, $sp, -24
     sw    $ra, 16($sp)
+    {LA_T0_MID}
+    lw    $t0, 0($t0)
+    nop
+    sw    $t0, 20($sp)
     jal   settle
     addiu $a0, $zero, {WAIT_LIMIT}
-    bnez  $v0, tp_sync
+    bnez  $v0, tp_ok
     nop
     jal   blend_fail
     nop
+    jal   stat
+    addiu $a0, $zero, 3
     lui   $a0, 0x7fff
     jal   settle
     ori   $a0, $a0, 0xffff
+    b     tp_hist
+    nop
+tp_ok:
+    lw    $t0, 20($sp)
+    nop
+    beqz  $t0, tp_sync
+    nop
+    jal   stat
+    addiu $a0, $zero, 2
+tp_hist:
+    addiu $a0, $zero, {STAT_HIST_DONE}
+    jal   stat_line
+    addiu $a2, $zero, 2
 tp_sync:
     lw    $ra, 16($sp)
     addiu $sp, $sp, 24
@@ -341,6 +388,8 @@ tick_env:
     nop
     beqz  $v0, te_plain
     nop
+    jal   stat
+    move  $a0, $zero
     {LA_T0_NEXT}
     lw    $t1, 0($t0)
     {LA_T2_SHOWN}
@@ -383,6 +432,137 @@ blend_ok:
     jr    $ra
     xori  $v0, $v0, 1
 
+# statistics: STATS word a0 += 1 (uses at, v1)
+stat:
+    lui   $at, 0x8020
+    sll   $a0, $a0, 2
+    addu  $at, $at, $a0
+    lw    $v1, {STATS_LO}($at)
+    nop
+    addiu $v1, $v1, 1
+    jr    $ra
+    sw    $v1, {STATS_LO}($at)
+
+# histogram: STATS word a0 + min(line >> a2, 15), line = hblanks since the
+# handler started
+stat_line:
+    lui   $at, 0x1f80
+    lw    $v1, 0x1110($at)
+    nop
+    andi  $v1, $v1, 0xffff
+    srlv  $v1, $v1, $a2
+    sltiu $at, $v1, 16
+    bnez  $at, sl_ok
+    nop
+    addiu $v1, $zero, 15
+sl_ok:
+    j     stat
+    addu  $a0, $a0, $v1
+
+# ------------------------------------------- tick vblank, before callbacks
+save_prev:
+    addiu $sp, $sp, -8
+    sw    $ra, 0($sp)
+    jal   can_blend
+    nop
+    {LA_T0_STREAK}
+    lw    $t1, 0($t0)
+    beqz  $v0, sp_reset
+    addiu $t1, $t1, 1
+    slti  $t2, $t1, 0x7fff
+    bnez  $t2, sp_store
+    nop
+    addiu $t1, $zero, 0x7fff
+    b     sp_store
+    nop
+sp_reset:
+    {LA_T2_FAILS}
+    sw    $zero, 0($t2)
+    {LA_T2_COOL}
+    sw    $zero, 0($t2)
+    move  $t1, $zero
+sp_store:
+    sw    $t1, 0($t0)
+    {LA_T0_COOL}
+    lw    $t1, 0($t0)
+    nop
+    beqz  $t1, sp_cool
+    addiu $t1, $t1, -1
+    sw    $t1, 0($t0)
+sp_cool:
+    # statistics: zeroed once (magic word), then vblanks lost while blending
+    # and ticks spent in cooldown
+    lui   $at, 0x8020
+    lw    $t0, {STATS_MAGIC_LO}($at)
+    lui   $t1, {MAGIC_HI}
+    ori   $t1, $t1, {MAGIC_LO}
+    beq   $t0, $t1, sp_st0
+    addiu $t2, $at, {STATS_LO}
+    addiu $t3, $t2, 0x100
+sp_zero:
+    sw    $zero, 0($t2)
+    addiu $t2, $t2, 4
+    bne   $t2, $t3, sp_zero
+    nop
+    sw    $t1, {STATS_MAGIC_LO}($at)
+sp_st0:
+    lui   $t0, 0x800d
+    lw    $t1, 0x5100($t0)
+    lui   $at, 0x8020
+    lw    $t3, {STATS_LASTV_LO}($at)
+    sw    $t1, {STATS_LASTV_LO}($at)
+    subu  $t3, $t1, $t3
+    sltiu $t3, $t3, 3
+    bnez  $t3, sp_st1
+    nop
+    {LA_T0_STREAK}
+    lw    $t0, 0($t0)
+    nop
+    slti  $t0, $t0, {WARMUP}
+    bnez  $t0, sp_st1
+    nop
+    jal   stat
+    addiu $a0, $zero, 8
+sp_st1:
+    {LA_T0_COOL}
+    lw    $t0, 0($t0)
+    nop
+    beqz  $t0, sp_st2
+    nop
+    jal   stat
+    addiu $a0, $zero, 9
+sp_st2:
+    lw    $ra, 0($sp)
+    addiu $sp, $sp, 8
+    {LA_T0_LAYERS}
+    {LA_T1_PREVL}
+    addiu $t2, $zero, 3
+sp_layers:
+    lw    $t3, 0x10($t0)
+    lw    $t4, 0x14($t0)
+    addiu $t0, $t0, 0x50
+    sw    $t3, 0($t1)
+    sw    $t4, 4($t1)
+    addiu $t2, $t2, -1
+    bnez  $t2, sp_layers
+    addiu $t1, $t1, 8
+    {LA_T0_OBJS}
+    {LA_T1_PREVO}
+    addiu $t2, $zero, 64
+sp_objs:
+    lw    $t3, 0x1c($t0)
+    lw    $t4, 0x20($t0)
+    addiu $t0, $t0, 0x70
+    sw    $t3, 0($t1)
+    sw    $t4, 4($t1)
+    addiu $t2, $t2, -1
+    bnez  $t2, sp_objs
+    addiu $t1, $t1, 8
+    j     {DISPATCH}
+    nop
+
+
+@CAVE2
 # v0 = 1 when the field callbacks are the active set, no window is open, the
 # map is drawn by the town layer renderer only and no fade/tint is on
 can_blend:
@@ -483,7 +663,6 @@ bw_out:
     jr    $ra
     nop
 
-@CAVE2
 # draw the in-between picture into buffer s0
 blend_draw:
     addiu $sp, $sp, -24
@@ -599,65 +778,6 @@ draw_layers:
     jr    $ra
     addiu $sp, $sp, 24
 
-# ------------------------------------------- tick vblank, before callbacks
-save_prev:
-    addiu $sp, $sp, -8
-    sw    $ra, 0($sp)
-    jal   can_blend
-    nop
-    {LA_T0_STREAK}
-    lw    $t1, 0($t0)
-    beqz  $v0, sp_reset
-    addiu $t1, $t1, 1
-    slti  $t2, $t1, 0x7fff
-    bnez  $t2, sp_store
-    nop
-    addiu $t1, $zero, 0x7fff
-    b     sp_store
-    nop
-sp_reset:
-    {LA_T2_FAILS}
-    sw    $zero, 0($t2)
-    {LA_T2_COOL}
-    sw    $zero, 0($t2)
-    move  $t1, $zero
-sp_store:
-    sw    $t1, 0($t0)
-    {LA_T0_COOL}
-    lw    $t1, 0($t0)
-    nop
-    beqz  $t1, sp_cool
-    addiu $t1, $t1, -1
-    sw    $t1, 0($t0)
-sp_cool:
-    lw    $ra, 0($sp)
-    addiu $sp, $sp, 8
-    {LA_T0_LAYERS}
-    {LA_T1_PREVL}
-    addiu $t2, $zero, 3
-sp_layers:
-    lw    $t3, 0x10($t0)
-    lw    $t4, 0x14($t0)
-    addiu $t0, $t0, 0x50
-    sw    $t3, 0($t1)
-    sw    $t4, 4($t1)
-    addiu $t2, $t2, -1
-    bnez  $t2, sp_layers
-    addiu $t1, $t1, 8
-    {LA_T0_OBJS}
-    {LA_T1_PREVO}
-    addiu $t2, $zero, 64
-sp_objs:
-    lw    $t3, 0x1c($t0)
-    lw    $t4, 0x20($t0)
-    addiu $t0, $t0, 0x70
-    sw    $t3, 0($t1)
-    sw    $t4, 4($t1)
-    addiu $t2, $t2, -1
-    bnez  $t2, sp_objs
-    addiu $t1, $t1, 8
-    j     {DISPATCH}
-    nop
 """
 
 LAYERS = 0x8010DF80
@@ -742,7 +862,10 @@ def source():
     subs = {
         "LA_T1_DB0": la("$t1", DB0), "LA_T3_DB0": la("$t3", DB0), "LA_T3_DB1": la("$t3", DB1),
         "LA_T3_DRENV0": la("$t3", DB0 + 0x1C), "LA_T3_DRENV1": la("$t3", DB1 + 0x1C),
-        "WAIT_LIMIT": str(WAIT_LIMIT), "SUBMIT_LIMIT": str(SUBMIT_LIMIT), "IDLE_LATE": str(IDLE_LATE), "COOLDOWN": str(COOLDOWN), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
+        "STATS_LO": str(STATS_LO), "STATS_MAGIC_LO": str(STATS_LO + 4 * STAT_MAGIC),
+        "STATS_LASTV_LO": str(STATS_LO + 4 * STAT_LASTV), "MAGIC_HI": hex(STAT_MAGIC_VALUE >> 16),
+        "MAGIC_LO": hex(STAT_MAGIC_VALUE & 0xFFFF), "STAT_HIST_DONE": str(STAT_HIST_DONE),
+        "STAT_HIST_SUBMIT": str(STAT_HIST_SUBMIT), "WAIT_LIMIT": str(WAIT_LIMIT), "SUBMIT_LIMIT": str(SUBMIT_LIMIT), "IDLE_LATE": str(IDLE_LATE), "COOLDOWN": str(COOLDOWN), "LA_S0_DB0": la("$s0", DB0), "LA_S0_DB1": la("$s0", DB1),
         "LA_A0_DB1D": la("$a0", DB1 + 0x5C), "LA_A0_DB1": la("$a0", DB1), "LA_A0_DB0": la("$a0", DB0),
         "LA_T0_CBS": la("$t0", CBS), "LA_T0_WIN": la("$t0", WINDOWS),
         "LA_T2_CB0": la("$t2", FIELD_CBS[0]), "LA_T2_CB1": la("$t2", FIELD_CBS[1]),
