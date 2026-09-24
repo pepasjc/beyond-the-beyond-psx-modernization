@@ -31,8 +31,10 @@ on the original release.
 - **Smooth followers:** party followers such as the dragon move at the
   leader's speed and keep a steady distance, instead of rushing a tile and
   stopping. This works both walking and running.
-- **HP instead of VP:** menus, status screens and item/spell names ("HP Up",
-  "Everyone's HP Heal") say HP.
+- **HP instead of VP:** menus, status screens, item/spell names ("HP Up",
+  "Everyone's HP Heal") and every message say HP. That includes the level-up
+  lines ("Max HP increases by 1!") and dialog. Messages are compressed on
+  the disc, so they are changed as they are displayed.
 - **Reward multipliers:** EXP ×2.5 and gold ×2 by default. Both can be
   changed at build time (`--exp 1|1.5|2|2.5|3|4`, `--gold 1|2|4`).
 - **Save anywhere:** the field menu has a sixth item, **Save**, below
@@ -157,6 +159,5 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
   frame, so that in-between picture is skipped and shows as a small hitch.
   The original has the same overruns, but at 30 fps they don't show. The
   world map (a different map renderer) stays at 30 fps.
-- NPC dialog (`.TLK` files) is compressed. Any "VP" said in dialog is still VP.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.

@@ -30,7 +30,9 @@ Changes, all in SCUS_947.02 except where noted:
    update floors sub-pixel steps instead of rounding toward zero.
 
 3. Rename VP to HP in menu labels and item/spell names (exe and
-   SYSTEM\RESIUS.DAT).  Dialog (.TLK) is compressed and not touched.
+   SYSTEM\RESIUS.DAT), and at run time in every message (system text,
+   battle results, dialog), which are compressed on the disc: the message
+   expander's output gets each standalone "VP" turned into "HP".
 
 4. Rewards: EXP and gold multipliers (see EXP_PRESETS, GOLD_PRESETS).  On a
    Reunion disc this also fixes Reunion's gold-lookup slip (a stale monster
@@ -218,6 +220,56 @@ VP_EXE = [0x800C65E0, 0x800C65F0, 0x800C687C, 0x800C6890, 0x800C689C,
           0x800C7198, 0x800C75BC]
 # Item/spell names in SYSTEM\RESIUS.DAT: "VP Up", "Everyone's VP Heal".
 VP_RESIUS = [0x8174, 0x82E8]
+
+
+# Messages (system text, battle results such as the level-up lines, NPC
+# dialog) are compressed, so their "VP" is changed at run time instead: the
+# message expander 0x8006A9A4 builds each message as 16-bit characters in
+# 0x80101E30 (0-terminated), and its three callers go through this wrapper,
+# which turns every "VP" with no letter on either side into "HP".
+MSG_EXPAND = 0x8006A9A4
+MSG_EXPAND_CALLS = [0x80069F94, 0x8006C04C, 0x8006C178]
+VP_CAVE = 0x800411D8                # dead function (nothing on the disc calls it), 159 words
+VP_MESSAGES = f"""
+    addiu $sp, $sp, -24
+    sw    $ra, 16($sp)
+    jal   {MSG_EXPAND:#x}
+    nop
+    lui   $t0, 0x8010
+    addiu $t0, $t0, 0x1e30
+    move  $t3, $zero
+vx_loop:
+    lhu   $t1, 0($t0)
+    nop
+    beqz  $t1, vx_done
+    addiu $t2, $zero, 0x56
+    bne   $t1, $t2, vx_next
+    nop
+    lhu   $t4, 2($t0)
+    addiu $t2, $zero, 0x50
+    bne   $t4, $t2, vx_next
+    nop
+    lhu   $t5, 4($t0)
+    ori   $t6, $t3, 0x20
+    addiu $t6, $t6, -0x61
+    sltiu $t6, $t6, 26
+    bnez  $t6, vx_next
+    ori   $t6, $t5, 0x20
+    addiu $t6, $t6, -0x61
+    sltiu $t6, $t6, 26
+    bnez  $t6, vx_next
+    addiu $t1, $zero, 0x48
+    sh    $t1, 0($t0)
+vx_next:
+    move  $t3, $t1
+    b     vx_loop
+    addiu $t0, $t0, 2
+vx_done:
+    lw    $ra, 16($sp)
+    nop
+    jr    $ra
+    addiu $sp, $sp, 24
+"""
 
 
 def vp_to_hp(buf, offsets):
@@ -933,6 +985,14 @@ def main(src_bin, out_bin):
         print(f"60 Hz presentation: {words} words at {hex(interp60.CAVE)} and {hex(interp60.CAVE2)}")
 
     vp_to_hp(exe, [a - base for a in VP_EXE])
+    o = VP_CAVE - base
+    assert exe[o:o + 4] == assemble("addiu $sp, $sp, -0x40", 0), "0x800411D8 is not the expected dead function"
+    code, _ = assemble_labeled(VP_MESSAGES, VP_CAVE)
+    exe[o:o + len(code)] = code
+    for site in MSG_EXPAND_CALLS:
+        o = site - base
+        assert exe[o:o + 4] == struct.pack("<I", (3 << 26) | (MSG_EXPAND >> 2 & 0x3FFFFFF)), hex(site)
+        exe[o:o + 4] = struct.pack("<I", (3 << 26) | (VP_CAVE >> 2 & 0x3FFFFFF))
     resius = bytearray(disc.read_file(r"SYSTEM\RESIUS.DAT"))
     vp_to_hp(resius, VP_RESIUS)
     disc.write_file(r"SYSTEM\RESIUS.DAT", bytes(resius))
