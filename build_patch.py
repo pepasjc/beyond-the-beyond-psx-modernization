@@ -1,7 +1,7 @@
 """Beyond the Beyond (USA) SCUS_947.02 modernization patch.
 
     python build_patch.py <in.bin> <out.bin> [--run 2x|1.5x] [--exp N] [--gold N]
-                          [--no-smooth] [--no-save-anywhere] [--no-options]
+                          [--no-smooth] [--no-save-anywhere] [--no-options] [--no-achievements]
 
 Input is a MODE2/2352 .bin of the original Beyond the Beyond (USA), CRC32
 453917AF.  Inspired by "Beyond the Beyond - Reunion" by Skiller and
@@ -64,6 +64,12 @@ Changes, all in SCUS_947.02 except where noted:
 
 10. 60 Hz on the field: an in-between picture on the vblank the game
     leaves idle (interp60.py, docs/60fps.md).  --no-smooth leaves it out.
+
+11. Built-in achievements: the RetroAchievements set (game 11415) tested
+    every vblank, an unlock popup, an "Achievements" item in the field menu
+    and its own memory card file (achievements.py, ra/, docs/achievements.md).
+    The exe grows and moves into MOVIE/PAD.FIL.  --no-achievements leaves it
+    out.
 """
 import struct
 import sys
@@ -430,6 +436,7 @@ def phys_source(helper):
 
 # Save anywhere: SELECT on the field calls the church's save routine.
 SAVE_ANYWHERE = True
+ACHIEVEMENTS = True                  # 11. (achievements.py)
 SAVE_ROUTINE = 0x8006877C           # "record your journey": slot choice, confirm, card write
 SAVE_CAVE = 0x8003BF58              # dead function (nothing on the disc calls it), 176 words
 SELECT_HOOK = 0x8008F234            # field loop: "sb $zero, SELECT flag", runs only when SELECT was pressed
@@ -963,7 +970,7 @@ def main(src_bin, out_bin):
         src = SAVE_CODE.replace("STR_HI", hex(hi_lo(text_at)[0])).replace("STR_LO", str(hi_lo(text_at)[1]))
         code, labels = assemble_labeled(src, SAVE_CAVE)
         code += SAVE_ITEM_TEXT
-        assert len(code) <= 176 * 4
+        assert len(code) <= 170 * 4    # its last words: the achievements menu trampoline
         exe[o:o + len(code)] = code
         o = SELECT_HOOK - base
         assert exe[o:o + 8] == assemble("sb $zero, -0x190d($at)" + chr(10) + "lw $t7, -0x6f44($t7)", 0)
@@ -978,6 +985,12 @@ def main(src_bin, out_bin):
         assert exe[o:o + 4] == branch(BEQ, AT_REG, MENU_RANGE_CHECK, MENU_LOOP_END)
         exe[o:o + 4] = branch(BEQ, AT_REG, MENU_RANGE_CHECK, labels["menu"])
         print(f"save anywhere: field menu \"Save\" and SELECT ({len(code) // 4} words at {hex(SAVE_CAVE)})")
+
+    ach = None
+    if ACHIEVEMENTS:
+        import achievements
+        ach = achievements.apply(exe, base, assemble, branch, BEQ, AT_REG, labels if SAVE_ANYWHERE else None)
+        print(f"achievements: {ach[0]} bytes at {hex(achievements.BASE)}..{hex(ach[1])}, exe grows to {len(exe)} bytes")
 
     if SMOOTH:
         import interp60
@@ -998,7 +1011,10 @@ def main(src_bin, out_bin):
     disc.write_file(r"SYSTEM\RESIUS.DAT", bytes(resius))
     print(f"VP->HP: {len(VP_EXE)} exe labels, {len(VP_RESIUS)} RESIUS names")
 
-    disc.write_file(EXE_NAME, bytes(exe))
+    if ach:
+        disc.move_file_into(EXE_NAME, bytes(exe), r"MOVIE\PAD.FIL")
+    else:
+        disc.write_file(EXE_NAME, bytes(exe))
     disc.save(out_bin)
     open(out_bin.rsplit(".", 1)[0] + ".exe", "wb").write(exe)
 
@@ -1014,9 +1030,11 @@ if __name__ == "__main__":
     ap.add_argument("--no-smooth", action="store_true", help="no 60 Hz presentation on the field")
     ap.add_argument("--no-save-anywhere", action="store_true", help="no Save in the field menu / SELECT save")
     ap.add_argument("--no-options", action="store_true", help="no Setting > Extras switches (features always on)")
+    ap.add_argument("--no-achievements", action="store_true", help="no built-in RetroAchievements")
     args = ap.parse_args()
     RUN_SPEED, EXP_MULT, GOLD_MULT, SMOOTH = args.run, args.exp, args.gold, not args.no_smooth
     SAVE_ANYWHERE = not args.no_save_anywhere
     OPTIONS = not args.no_options
+    ACHIEVEMENTS = not args.no_achievements
     print(f"run speed: {RUN_SPEED}")
     main(args.src, args.out)

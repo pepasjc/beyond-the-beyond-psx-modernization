@@ -51,6 +51,17 @@ on the original release.
 
   Everything starts on 100% / On, also for older saves. `--no-options`
   builds without the menu, with the features always on.
+- **Built-in achievements:** the
+  [RetroAchievements set](https://retroachievements.org/game/11415) (63
+  achievements, by tele) runs on the console, with no emulator or network:
+  - an unlock popup the moment one is earned, in the field and in battle;
+  - an **Achievements** item at the end of the field menu, with the full list,
+    points and descriptions;
+  - unlocks go to their own memory card file (`BASCUS-94702ACH`, one block),
+    written at once and shared by every save game.
+
+  Unlocks are not uploaded to the website. `--no-achievements` builds without
+  them. Details: [docs/achievements.md](docs/achievements.md).
 - **Random encounters:** the original per-step roll against each area's rate
   stays, plus a 25-step grace period after every fight, so there are no
   back-to-back battles. On average there is a fight every ~36–50
@@ -67,6 +78,10 @@ on the original release.
 - **Emulator test harness:** built on `emurun.py` from the Snatcher translation
   project, which hosts the [Beetle PSX](https://github.com/libretro/beetle-psx-libretro)
   libretro core.
+- **Achievements:** the [RetroAchievements](https://retroachievements.org/) set for
+  Beyond the Beyond by **tele**. The evaluator follows
+  [rcheevos](https://github.com/RetroAchievements/rcheevos). This project is not
+  affiliated with RetroAchievements.
 - **Libraries:** [Keystone](https://www.keystone-engine.org/) (assembler) and
   [Capstone](https://www.capstone-engine.org/) (disassembler).
 
@@ -78,6 +93,9 @@ You need:
   CRC32 `453917AF`.
 - Python 3.10+ with `pip install keystone-engine capstone`.
 - `chdman` (MAME tools) to convert CHD ↔ BIN/CUE.
+- For the achievements (left out with `--no-achievements`): WSL with Docker
+  and the `mipsel-linux-gnu-gcc` image from `ra/docker/Dockerfile`
+  (`wsl -d Ubuntu-24.04 -- docker build -t re2-mipsel ra/docker`).
 
 ```sh
 chdman extractcd -i "Beyond the Beyond (USA).chd" -o original.cue -ob original.bin
@@ -98,7 +116,10 @@ to match). Emulators and the MiSTer name memory cards after the game file.
 
 All code changes are in `SCUS_947.02`. The executable has no free space, so
 new code comes from rewriting existing routines more compactly. See the
-docstring at the top of `build_patch.py` for each change.
+docstring at the top of `build_patch.py` for each change. The achievements
+code is C (`ra/`) and lives in the buffers of libgpu's unused debug font; the
+exe grows to load it and moves into a padding file on the disc
+(`achievements.py`, [docs/achievements.md](docs/achievements.md)).
 
 | What | Address |
 |---|---|
@@ -132,7 +153,10 @@ moves 8 px.
 | File | Purpose |
 |---|---|
 | `build_patch.py` | Applies every change to a disc image |
-| `disc.py` | ISO9660 file lookup and in-place file rewrite for MODE2/2352 images, with EDC/ECC |
+| `achievements.py` | Builds the achievements code (`ra/src`) and hooks it into the exe |
+| `ra/compile_set.py` | Compiles the RetroAchievements set into the evaluator's tables |
+| `ra/host/diff.c` | Checks the evaluator against stock rcheevos, frame by frame |
+| `disc.py` | ISO9660 file lookup and in-place file rewrite for MODE2/2352 images, with EDC/ECC; moves a grown file into a padding file |
 | `mips.py` | Capstone disassembly helpers for the executable |
 | `scan.py` | Finds a word (default `VP`) in every file on the disc |
 | `emu.py` | Headless emulator harness: boots the disc with a memory card, reads RAM, drives input |
@@ -152,6 +176,9 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
 | `battle_attack.py` | Starts a battle, attacks with everyone, logs Finn's walk and records an MP4 |
 | `battle_walk_watch.lua` | PCSX-Redux script: write breakpoints on the party's battle position/velocity, logs every writer PC |
 | `play_redux.bat` | Opens PCSX-Redux with the test disc and that script, for someone to play while it records |
+| `ach_test.py` | Achievements end to end: card file, forced unlock, popup, list, reload |
+| `ach_soak.py` | Random play on an achievements build: freezes, writes into its code |
+| `ramfree.py`, `ramfree_sum.py` | Which RAM never holds data during random play |
 
 ## Known limits
 
@@ -161,3 +188,6 @@ The harness needs the Beetle PSX libretro core, a PS1 BIOS, and `emurun.py`
   world map (a different map renderer) stays at 30 fps.
 - Holding ○ also speeds up characters that use the follow command during
   cutscenes.
+- Achievements: unlocks are not synced to retroachievements.org. The popup
+  and the list are windows, so the 60 fps pictures pause while they show
+  (as for any menu). A memory card without a free block keeps no unlocks.

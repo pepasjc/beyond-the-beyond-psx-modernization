@@ -14,3 +14,8 @@ shots/
 clips/
 work/
 __pycache__/
+
+# Achievements build output (ra/src/gen/set.c and set.txt are kept)
+ra/src/obj/
+ra/src/gen/ra.map
+ra/src/gen/icon.c

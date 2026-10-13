@@ -1,4 +1,5 @@
-"""Minimal MODE2/2352 PS1 disc helpers: ISO9660 lookup, file read/write with EDC/ECC."""
+"""Minimal MODE2/2352 PS1 disc helpers: ISO9660 lookup, file read/write with EDC/ECC,
+and moving a grown file into the tail of a padding file."""
 import struct
 
 SEC = 2352
@@ -106,6 +107,53 @@ class Disc:
             sec = self.buf[o:o + SEC]
             fix_form1(sec)
             self.buf[o:o + SEC] = sec
+
+    def _record(self, name):
+        """(sector lba, offset) of the directory record of a file."""
+        pvd = self.user(16)
+        root = pvd[156:190]
+        lba, size = struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0]
+        parts = name.strip("\\/").split("\\")
+        for part in parts[:-1]:
+            lba, size = self._lookup(lba, size, part.upper())
+        for s in range((size + 2047) // 2048):
+            d = self.user(lba + s)
+            p = 0
+            while p < 2048 and d[p]:
+                nl = d[p + 32]
+                n = d[p + 33:p + 33 + nl].decode("latin1").split(";")[0]
+                if n.upper() == parts[-1].upper():
+                    return lba + s, p
+                p += d[p]
+        raise KeyError(name)
+
+    def _set_extent(self, name, lba, size):
+        sec, p = self._record(name)
+        o = sec * SEC
+        s = self.buf[o:o + SEC]
+        struct.pack_into("<II", s, HDR + p + 2, lba, int.from_bytes(lba.to_bytes(4, "little"), "big"))
+        struct.pack_into("<II", s, HDR + p + 10, size, int.from_bytes(size.to_bytes(4, "little"), "big"))
+        fix_form1(s)
+        self.buf[o:o + SEC] = s
+
+    def move_file_into(self, name, data, donor):
+        """Write `name` with new contents (any size) into the last sectors of
+        the file `donor`, which shrinks by as many sectors (a padding file)."""
+        dlba, dsize = self.find(donor)
+        n = (len(data) + 2047) // 2048
+        dn = (dsize + 2047) // 2048
+        assert dsize % 2048 == 0 and n < dn
+        lba = dlba + dn - n
+        for i in range(n):
+            o = (lba + i) * SEC
+            s = self.buf[o:o + SEC]
+            sub = 0x89 if i == n - 1 else 0x08         # data, last one also end of record/file
+            s[16:24] = bytes((0, 0, sub, 0)) * 2
+            s[HDR:HDR + 2048] = data[i * 2048:(i + 1) * 2048].ljust(2048, b"\0")
+            fix_form1(s)
+            self.buf[o:o + SEC] = s
+        self._set_extent(donor, dlba, dsize - n * 2048)
+        self._set_extent(name, lba, len(data))
 
     def save(self, path):
         open(path, "wb").write(self.buf)
